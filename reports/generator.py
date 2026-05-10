@@ -16,7 +16,7 @@ def generate_html_report(state: dict) -> str:
     generated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     orig_co2: dict[str, float] = {
-        r["component_name"]: r["original_scores"]["co2_eq_kg"]
+        r["component_name"]: r["original_scores"]["environmental_impact"]
         for r in lca_results
     }
 
@@ -25,7 +25,7 @@ def generate_html_report(state: dict) -> str:
     for comp in mcda_scores:
         orig = orig_co2.get(comp["component_name"], 0.0)
         best = comp.get("best_alternative")
-        total_opt += orig * (1 - best["co2_reduction_pct"] / 100) if best else orig
+        total_opt += orig * (1 - best["impact_reduction_pct"] / 100) if best else orig
 
     reduction_pct = ((total_orig - total_opt) / total_orig * 100) if total_orig else 0.0
 
@@ -48,7 +48,7 @@ def generate_html_report(state: dict) -> str:
                     f"<tr><td>{comp['component_name']}</td>"
                     f"<td>{comp['original_material']}</td>"
                     f"<td>{best['name']}</td>"
-                    f"<td>{best['co2_reduction_pct']:.1f}%</td>"
+                    f"<td>{best['impact_reduction_pct']:.1f}%</td>"
                     f"<td>{best['mcda_score']:.3f}</td>"
                     f"<td>{best.get('justification', '')}</td></tr>"
                 )
@@ -60,7 +60,7 @@ def generate_html_report(state: dict) -> str:
             name = comp["component_name"]
             orig = orig_co2.get(name, 0.0)
             best = comp.get("best_alternative")
-            opt = orig * (1 - best["co2_reduction_pct"] / 100) if best else orig
+            opt = orig * (1 - best["impact_reduction_pct"] / 100) if best else orig
             delta = ((orig - opt) / orig * 100) if orig else 0.0
             rows += (
                 f"<tr><td>{name}</td>"

@@ -193,8 +193,8 @@ def handle_input(user_input: str) -> None:
         _stream(graph, initial_state, config, "🤖 Agent is analysing your product...")
     except _CONNECTION_ERRORS:
         msg = (
-            "Failed to connect to the LLM. Is Ollama running? "
-            "Start Ollama and ensure the model is pulled, then try again."
+            "Impossibile connettersi al modello LLM. "
+            "Verifica che la chiave OPENROUTER_API_KEY sia valida e che ci sia connessione internet."
         )
         st.session_state._last_error = msg
         st.session_state.awaiting_approval = None
@@ -213,7 +213,8 @@ def handle_input(user_input: str) -> None:
         st.session_state.awaiting_approval = None
     else:
         next_node = _next_interrupt(graph, config)
-        if next_node == "human_feedback_processor_constraints":
+        phase = st.session_state.graph_state.get("current_phase", "")
+        if next_node == "human_feedback_processor" and phase == "constraints":
             constraints = st.session_state.graph_state.get("constraints", {})
             if constraints:
                 constraints_str = "\n".join([f"- **{k}**: {v}" for k, v in constraints.items()])
@@ -225,7 +226,7 @@ def handle_input(user_input: str) -> None:
                 "**Vanno bene o vuoi aggiungerne/modificarne alcuni?** Scrivi le tue modifiche o premi **Approve** per continuare."
             )
             st.session_state.awaiting_approval = "constraints"
-        elif next_node == "human_feedback_processor_interview":
+        elif next_node == "human_feedback_processor" and phase == "interview":
             questions = st.session_state.graph_state.get("pending_feedback", "Can you provide more specific details about dimensions, load, and usage environment?")
             _add_message(
                 "assistant",
@@ -233,7 +234,7 @@ def handle_input(user_input: str) -> None:
                 "**Please reply with the missing specifications.**",
             )
             st.session_state.awaiting_approval = "interview"
-        elif next_node == "human_feedback_processor_workflow":
+        elif next_node == "human_feedback_processor" and phase == "workflow":
             _add_message(
                 "assistant",
                 "I've mapped the required manufacturing processes and component breakdown.\n\n"
@@ -270,8 +271,8 @@ def handle_feedback(user_input: str) -> None:
         _stream(graph, None, config, "🤖 Processing your feedback...")
     except _CONNECTION_ERRORS:
         msg = (
-            "Failed to connect to the LLM. Is Ollama running? "
-            "Start Ollama and ensure the model is pulled, then try again."
+            "Impossibile connettersi al modello LLM. "
+            "Verifica che la chiave OPENROUTER_API_KEY sia valida e che ci sia connessione internet."
         )
         st.session_state._last_error = msg
         st.session_state.awaiting_approval = None
@@ -283,8 +284,9 @@ def handle_feedback(user_input: str) -> None:
         return
 
     next_node = _next_interrupt(graph, config)
+    phase = st.session_state.graph_state.get("current_phase", "")
 
-    if next_node == "human_feedback_processor_constraints":
+    if next_node == "human_feedback_processor" and phase == "constraints":
         constraints = st.session_state.graph_state.get("constraints", {})
         if constraints:
             constraints_str = "\n".join([f"- **{k}**: {v}" for k, v in constraints.items()])
@@ -296,14 +298,14 @@ def handle_feedback(user_input: str) -> None:
             "**Vanno bene o vuoi aggiungerne/modificarne alcuni?** Scrivi le tue modifiche o premi **Approve** per continuare."
         )
         st.session_state.awaiting_approval = "constraints"
-    elif next_node == "human_feedback_processor_interview":
+    elif next_node == "human_feedback_processor" and phase == "interview":
         questions = st.session_state.graph_state.get("pending_feedback", "More details needed.")
         _add_message(
             "assistant",
             f"Still missing some details:\n\n{questions}\n\n**Please provide the specs.**",
         )
         st.session_state.awaiting_approval = "interview"
-    elif next_node == "human_feedback_processor_workflow":
+    elif next_node == "human_feedback_processor" and phase == "workflow":
         _add_message(
             "assistant",
             "I've mapped the required manufacturing processes and component breakdown.\n\n"
@@ -481,7 +483,19 @@ with right_col:
 
     assumptions = state.get("assumptions_list", [])
     if assumptions:
-        st.warning(f"**Assunzioni IA effettuate:**\n\n" + "\n".join([f"- {a}" for a in assumptions]), icon="⚠️")
+        st.warning(
+            "**Assunzioni e semplificazioni effettuate dall'IA:**\n\n"
+            + "\n".join([f"- {a}" for a in assumptions]),
+            icon="⚠️",
+        )
+
+    # T07: mostra errore esplicito se current_phase == "error"
+    if state.get("current_phase") == "error":
+        st.error(
+            f"❌ **Errore durante l'analisi:** {state.get('error_message', 'Errore sconosciuto.')}\n\n"
+            "Premi **Ricomincia Sessione** per riprovare.",
+            icon="🔴",
+        )
 
     # ── 1. Thought Log ──────────────────────────────────────────────────────
     thought_log: list[str] = state.get("thought_log", [])

@@ -2,7 +2,6 @@ import json
 import logging
 from langchain_core.messages import HumanMessage, SystemMessage
 from agents.state import AgentState
-from core.config import settings
 from core.llm_factory import ModelFactory
 from data.provider_factory import get_lca_provider
 from agents.schemas import WorkflowAndBOMResponse
@@ -20,17 +19,18 @@ GEOMETRY_MAPPING = {
 
 async def workflow_bom_ideator(state: AgentState) -> dict:
     thought_log = list(state.get("thought_log", []))
-    thought_log.append("Executing Workflow & BOM Ideator (7 Steps)...")
+    assumptions = list(state.get("assumptions_list", []))
+    thought_log.append("Esecuzione Workflow & BOM Ideator (7 Passi)...")
 
+    # T05: Step 2 — Lookup Aggregato
     llm = ModelFactory.get_model()
     constraints = state.get("constraints", {})
-    
-    prompt_name = "semantic_ideation_ollama" if settings.llm_provider == "ollama" else "semantic_ideation_api"
-    system_prompt = ModelFactory.get_system_prompt(prompt_name).format(
+
+    system_prompt = ModelFactory.get_system_prompt("semantic_ideation_api").format(
         user_input=state.get("user_input", ""),
         constraints=json.dumps(constraints),
     )
-    
+
     user_prompt = f"""
 Product Description: {state.get("user_input", "")}
 Constraints: {json.dumps(constraints)}
@@ -49,74 +49,115 @@ Esegui i seguenti Passi per la Generazione della BOM:
         result: WorkflowAndBOMResponse = await asyncio.to_thread(
             _invoke_structured, chain, llm, WorkflowAndBOMResponse, messages
         )
-        
+
         if not result.is_interview_complete:
-            thought_log.append("Interrupt: Missing constraints, geography or mass. Pausing.")
-            missing_text = "Non posso procedere perché mancano queste informazioni:\\n"
+            # T05: step rimane a 2 (non avanzare) durante l'intervista
+            thought_log.append("Interrupt: dati mancanti. In attesa della risposta utente.")
+            missing_text = "Non posso procedere perché mancano queste informazioni:\n"
             for q in result.interview_questions:
-                missing_text += f"- {q}\\n"
+                missing_text += f"- {q}\n"
             return {
                 "pending_feedback": missing_text,
                 "thought_log": thought_log,
-                "current_lca_step": 7
+                "assumptions_list": assumptions,
+                "current_lca_step": 2,          # T05: blocco alla fase 2
+                "current_phase": "interview",   # T07: routing esplicito
             }
-        
+
+        # T05: Step 3 — Selezione Materiale (inferenza LLM completata)
+        thought_log.append("Passo 3: Selezione materiale completata.")
+
         bom = []
         provider = get_lca_provider()
-        
+
+        # T05: Step 4 — Vincolo Geometrico & Fuzzy Match materiali
+        thought_log.append("Passo 4: Mapping geometria → processo manifatturiero.")
+
         for comp_data in result.components or []:
             comp = comp_data.model_dump()
             mat = comp.get("material", "unknown")
-            
-            # 1. Fuzzy Match Material in DataSet.xlsx
+
+            # 1. Fuzzy Match del materiale nel DataSet.xlsx
             best_match = provider.find_closest_match(mat)
             if best_match:
                 comp["material_source"] = best_match["flowName"]
                 comp["unit_impact_value"] = best_match["environmental_impact"]
             else:
-                comp["material_source"] = "Generic Profile (Fallback)"
+                comp["material_source"] = "Profilo Generico (Fallback)"
                 comp["unit_impact_value"] = 3.5  # fallback
-            
-            # 2. Map Geometry to Process
+                # T04: fallback reso visibile
+                assumptions.append(
+                    f"Dati LCA non trovati per '{mat}': "
+                    f"usato valore di fallback 3.5 kg CO₂/kg (impatto PP vergine)."
+                )
+
+            # 2. Mapping Geometria → Processo
             geom = comp.get("geometry", "Pezzi Pieni Complessi")
             comp["manufacturing_process"] = GEOMETRY_MAPPING.get(geom, "Injection moulding")
-            
-            # Set baselines for schemas compatibility
+
+            # Baseline per compatibilità schema
             comp["baseline_environmental_impact"] = comp["unit_impact_value"]
             comp["baseline_cost"] = 1.0
             comp["lifespan_years"] = 10.0
-            
+
             bom.append(comp)
-            
+
+        # T05: Step 5 — Scomposizione BOM completata
+        thought_log.append(f"Passo 5: BOM generata con {len(bom)} componenti.")
+
         workflow = [w.model_dump() for w in (result.workflow_steps or [])]
-        
-        # Calculate Logistics Data
+
+        # T05: Step 6 — Calcolo Logistica
+        thought_log.append("Passo 6: Calcolo logistica (tkm).")
         mass = result.total_mass_kg or 1.0
-        # Default distance if geography is vague, just assume 500km for now if not specified.
-        # This is a simplification. The user prompt should ideally extract a distance.
-        dist_km = 500.0  
+
+        # T08: Distanza di default con assunzione esplicita se non specificata
+        geography = result.geography or "Non specificata"
+        if result.geography and any(
+            char.isdigit() for char in (result.geography or "")
+        ):
+            # Tenta estrazione numero dalla stringa (es. "Milano, 200 km")
+            import re
+            numbers = re.findall(r"\d+(?:\.\d+)?", result.geography)
+            dist_km = float(numbers[0]) if numbers else 500.0
+        else:
+            dist_km = 500.0
+            # T08: notifica l'assunzione all'utente
+            assumptions.append(
+                "Distanza logistica non specificata: usato valore di default 500 km. "
+                "Specifica la distanza dal fornitore per un calcolo preciso."
+            )
+
         tkm = (mass / 1000.0) * dist_km
         logistics = {
-            "geography": result.geography or "Unknown",
+            "geography": geography,
             "distance_km": dist_km,
-            "tkm": tkm
+            "tkm": tkm,
         }
-            
+
+        # Aggiungi assunzioni LLM alle nostre
+        if result.assumptions_made:
+            assumptions.extend(result.assumptions_made)
+
         return {
             "bom": bom,
             "workflow_steps": workflow,
             "thought_log": thought_log,
-            "current_lca_step": 7,
-            "detected_geometry": result.components[0].geometry if result.components else "Unknown",
+            "current_lca_step": 6,          # T05: Step 6 completato
+            "current_phase": "workflow",    # T07: routing esplicito
+            "detected_geometry": result.components[0].geometry if result.components else "Sconosciuta",
             "logistics_data": logistics,
-            "assumptions_list": result.assumptions_made
+            "assumptions_list": assumptions,
         }
 
     except Exception as exc:
-        logger.error(f"Workflow Ideation failed: {exc}")
-        thought_log.append(f"⚠ Errore ({exc}).")
-        
+        logger.error(f"Workflow Ideation fallito: {exc}")
+        thought_log.append(f"⚠ Errore durante l'analisi ({exc}).")
+
         return {
-            "pending_feedback": "Errore durante l'analisi. Riprovare.",
-            "thought_log": thought_log
+            "pending_feedback": "Si è verificato un errore durante l'analisi. Riprovare.",
+            "thought_log": thought_log,
+            "assumptions_list": assumptions,
+            "current_phase": "error",       # T07: routing esplicito su errore
+            "error_message": str(exc),
         }

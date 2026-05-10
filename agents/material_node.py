@@ -2,7 +2,6 @@ import json
 import logging
 from langchain_core.messages import HumanMessage, SystemMessage
 from agents.state import AgentState
-from core.config import settings
 from core.llm_factory import ModelFactory
 from agents.schemas import MaterialIdeationResponse
 from agents.nodes import _invoke_structured
@@ -12,18 +11,13 @@ logger = logging.getLogger(__name__)
 
 async def material_ideator(state: AgentState) -> dict:
     thought_log = list(state.get("thought_log", []))
-    thought_log.append("Executing Material Ideator (FASE 3-4)...")
+    thought_log.append("Esecuzione Material Ideator (Selezione Alternative Sostenibili)...")
 
     llm = ModelFactory.get_model()
     constraints = state.get("constraints", {})
     bom = state.get("bom", [])
     
-    prompt_name = (
-        "semantic_ideation_ollama"
-        if settings.llm_provider == "ollama"
-        else "semantic_ideation_api"
-    )
-    system_prompt = ModelFactory.get_system_prompt(prompt_name).format(
+    system_prompt = ModelFactory.get_system_prompt("semantic_ideation_api").format(
         user_input=state.get("user_input", ""),
         constraints=json.dumps(constraints),
     )
@@ -47,9 +41,11 @@ Exclude any material not compatible with the user constraints.
         )
         semantic_alternatives = [comp.model_dump() for comp in result.components]
         
+        thought_log.append("Alternative materiali generate con successo.")
         return {
             "semantic_alternatives": semantic_alternatives,
-            "thought_log": thought_log
+            "thought_log": thought_log,
+            "current_lca_step": 4,  # Step 4 — Selezione Materiale completata
         }
 
     except Exception as exc:

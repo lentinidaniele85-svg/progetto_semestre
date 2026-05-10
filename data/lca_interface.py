@@ -16,7 +16,7 @@ class LCADataProvider(ABC):
         """
 
     @abstractmethod
-    async def get_impact_scores(self, material_id: str) -> dict:
+    async def get_impact_scores(self, material_id: str) -> dict | None:
         """
         Retrieve environmental impact scores for a material by its id.
 
