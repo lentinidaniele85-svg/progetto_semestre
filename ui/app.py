@@ -193,8 +193,8 @@ def handle_input(user_input: str) -> None:
         _stream(graph, initial_state, config, "🤖 Agent is analysing your product...")
     except _CONNECTION_ERRORS:
         msg = (
-            "Impossibile connettersi al modello LLM. "
-            "Verifica che la chiave OPENROUTER_API_KEY sia valida e che ci sia connessione internet."
+            "Unable to connect to the LLM model. "
+            "Check that the OPENROUTER_API_KEY is valid and that you have an internet connection."
         )
         st.session_state._last_error = msg
         st.session_state.awaiting_approval = None
@@ -219,11 +219,11 @@ def handle_input(user_input: str) -> None:
             if constraints:
                 constraints_str = "\n".join([f"- **{k}**: {v}" for k, v in constraints.items()])
             else:
-                constraints_str = "- *(Nessun vincolo specifico estratto)*"
+                constraints_str = "- *(No specific constraints extracted)*"
             _add_message(
                 "assistant",
-                f"Ho estratto questi vincoli e specifiche dal tuo input:\n{constraints_str}\n\n"
-                "**Vanno bene o vuoi aggiungerne/modificarne alcuni?** Scrivi le tue modifiche o premi **Approve** per continuare."
+                f"I've extracted these constraints and specifications from your input:\n{constraints_str}\n\n"
+                "**Are these okay or would you like to add/modify some?** Type your changes or press **Approve** to continue."
             )
             st.session_state.awaiting_approval = "constraints"
         elif next_node == "human_feedback_processor" and phase == "interview":
@@ -241,6 +241,9 @@ def handle_input(user_input: str) -> None:
                 "**Please verify the workflow above.** Type any modifications or hit **Approve** to proceed with Material Ideation.",
             )
             st.session_state.awaiting_approval = "workflow"
+        elif phase == "error":
+            _add_message("assistant", "An error occurred during analysis. Please press **Restart Session** to try again.")
+            st.session_state.awaiting_approval = None
         else:
             _add_message("assistant", "Analysis complete!")
             st.session_state.awaiting_approval = None
@@ -271,8 +274,8 @@ def handle_feedback(user_input: str) -> None:
         _stream(graph, None, config, "🤖 Processing your feedback...")
     except _CONNECTION_ERRORS:
         msg = (
-            "Impossibile connettersi al modello LLM. "
-            "Verifica che la chiave OPENROUTER_API_KEY sia valida e che ci sia connessione internet."
+            "Unable to connect to the LLM model. "
+            "Check that the OPENROUTER_API_KEY is valid and that you have an internet connection."
         )
         st.session_state._last_error = msg
         st.session_state.awaiting_approval = None
@@ -291,11 +294,11 @@ def handle_feedback(user_input: str) -> None:
         if constraints:
             constraints_str = "\n".join([f"- **{k}**: {v}" for k, v in constraints.items()])
         else:
-            constraints_str = "- *(Nessun vincolo specifico estratto)*"
+            constraints_str = "- *(No specific constraints extracted)*"
         _add_message(
             "assistant",
-            f"Ho estratto questi vincoli e specifiche dal tuo input:\n{constraints_str}\n\n"
-            "**Vanno bene o vuoi aggiungerne/modificarne alcuni?** Scrivi le tue modifiche o premi **Approve** per continuare."
+            f"I've extracted these constraints and specifications from your input:\n{constraints_str}\n\n"
+            "**Are these okay or would you like to add/modify some?** Type your changes or press **Approve** to continue."
         )
         st.session_state.awaiting_approval = "constraints"
     elif next_node == "human_feedback_processor" and phase == "interview":
@@ -312,6 +315,9 @@ def handle_feedback(user_input: str) -> None:
             "**Please verify the workflow above.** Type any modifications or hit **Approve** to proceed with Material Ideation.",
         )
         st.session_state.awaiting_approval = "workflow"
+    elif phase == "error":
+        _add_message("assistant", "An error occurred during analysis. Please press **Restart Session** to try again.")
+        st.session_state.awaiting_approval = None
     else:
         _add_message(
             "assistant",
@@ -333,6 +339,19 @@ def handle_reject() -> None:
         "assistant",
         "Session reset. Please describe a new product to optimise.",
     )
+
+
+@st.dialog("Restart Session")
+def _confirm_restart():
+    st.write("This will delete the current analysis. Are you sure?")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Yes, restart", type="primary", use_container_width=True):
+            handle_reject()
+            st.rerun()
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -415,13 +434,11 @@ with left_col:
                     st.rerun()
         with btn_col2:
             if st.button("❌ Restart Session", width="stretch"):
-                handle_reject()
-                st.rerun()
+                _confirm_restart()
     elif st.session_state.graph_state:
         st.divider()
         if st.button("❌ Restart Session", width="stretch"):
-            handle_reject()
-            st.rerun()
+            _confirm_restart()
 
     # Show persisted error message (survives st.rerun)
     if st.session_state._last_error:
@@ -455,222 +472,238 @@ with left_col:
 with right_col:
 
     state = st.session_state.graph_state
+    phase = state.get("current_phase", "init")
 
-    # ── 0. 7-Steps LCA Workflow Tracker ─────────────────────────────────────
-    current_step = state.get("current_lca_step", 1)
-    st.subheader("🏁 7-Steps Progress")
-    steps = [
-        "Analisi Entità",
-        "Lookup Aggregato",
-        "Selezione Materiale",
-        "Vincolo Geometrico",
-        "Scomposizione BOM",
-        "Calcolo Logistica",
-        "Validazione & Gap Analysis"
-    ]
-    cols = st.columns(len(steps))
-    for i, col in enumerate(cols):
-        step_num = i + 1
-        with col:
-            if step_num < current_step:
-                st.markdown(f"<div style='font-size:12px; color:#10b981;'><b>✅ {step_num}. {steps[i]}</b></div>", unsafe_allow_html=True)
-            elif step_num == current_step:
-                st.markdown(f"<div style='font-size:12px; color:#f59e0b;'><b>🔄 {step_num}. {steps[i]}</b></div>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<div style='font-size:12px; color:#9ca3af;'><b>⏳ {step_num}. {steps[i]}</b></div>", unsafe_allow_html=True)
-    
-    st.divider()
-
-    assumptions = state.get("assumptions_list", [])
-    if assumptions:
-        st.warning(
-            "**Assunzioni e semplificazioni effettuate dall'IA:**\n\n"
-            + "\n".join([f"- {a}" for a in assumptions]),
-            icon="⚠️",
+    if phase == "init":
+        st.info(
+            "👋 **Welcome to the Sustainable Product Optimizer!**\n\n"
+            "Describe a product on the left to begin. The dashboard will progressively "
+            "reveal insights, BOM decomposition, and environmental metrics as the analysis advances.",
+            icon="ℹ️"
         )
+    else:
+        # ── 0. 7-Steps LCA Workflow Tracker ─────────────────────────────────────
+        current_step = state.get("current_lca_step", 1)
+        st.subheader("🏁 7-Steps Progress")
+        steps = [
+            "Entity Analysis",
+            "Aggregated Lookup",
+            "Material Selection",
+            "Geometric Constraint",
+            "BOM Breakdown",
+            "Logistics Calculation",
+            "Validation & Gap Analysis"
+        ]
+        cols = st.columns(len(steps))
+        for i, col in enumerate(cols):
+            step_num = i + 1
+            with col:
+                if step_num < current_step:
+                    st.markdown(f"<div style='font-size:12px; color:#10b981;'><b>✅ {step_num}. {steps[i]}</b></div>", unsafe_allow_html=True)
+                elif step_num == current_step:
+                    st.markdown(f"<div style='font-size:12px; color:#f59e0b;'><b>🔄 {step_num}. {steps[i]}</b></div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div style='font-size:12px; color:#9ca3af;'><b>⏳ {step_num}. {steps[i]}</b></div>", unsafe_allow_html=True)
+        
+        st.divider()
 
-    # T07: mostra errore esplicito se current_phase == "error"
-    if state.get("current_phase") == "error":
-        st.error(
-            f"❌ **Errore durante l'analisi:** {state.get('error_message', 'Errore sconosciuto.')}\n\n"
-            "Premi **Ricomincia Sessione** per riprovare.",
-            icon="🔴",
-        )
+        assumptions = state.get("assumptions_list", [])
+        if assumptions:
+            st.markdown("**Assumptions and simplifications made by the AI:**")
+            for a in assumptions:
+                if "fallback" in a.lower() or "3.5" in a:
+                    st.error(f"⚠️ Data fallback: {a}", icon="🔴")
+                else:
+                    st.warning(f"ℹ️ Assumption: {a}", icon="🟡")
 
-    # ── 1. Thought Log ──────────────────────────────────────────────────────
-    thought_log: list[str] = state.get("thought_log", [])
-    with st.expander(
-        f"🧠 Agent Thought Log ({len(thought_log)} steps)",
-        expanded=bool(thought_log),
-    ):
-        if thought_log:
-            for i, thought in enumerate(thought_log, 1):
-                st.markdown(f"**{i}.** {thought}")
-        else:
-            st.caption("Thoughts will appear here as the agent runs…")
+        # T07: mostra errore esplicito se current_phase == "error"
+        if phase == "error":
+            st.error(
+                f"❌ **Error during analysis:** {state.get('error_message', 'Unknown error.')}\n\n"
+                "Press **Restart Session** to try again.",
+                icon="🔴",
+            )
 
-    # ── 1.5 Workflow Produttivo ──────────────────────────────────────────────
-    st.subheader("⚙️ Workflow Produttivo")
-    workflow = state.get("workflow_steps", [])
-    if workflow:
-        st.markdown("La creazione dell'oggetto è stata suddivisa nei seguenti processi:")
-        for idx, step in enumerate(workflow, 1):
-            if isinstance(step, dict):
-                p_name = step.get('process_name', '')
-                p_out = step.get('process_output', '')
-                st.markdown(f"**Fase {idx}**: {p_name} ➔ **Output**: {p_out}")
+        # ── 1. Thought Log ──────────────────────────────────────────────────────
+        thought_log: list[str] = state.get("thought_log", [])
+        with st.expander(
+            f"🧠 Agent Thought Log ({len(thought_log)} steps)",
+            expanded=bool(thought_log),
+        ):
+            if thought_log:
+                for i, thought in enumerate(thought_log, 1):
+                    st.markdown(f"**{i}.** {thought}")
             else:
-                st.markdown(f"**Fase {idx}**: {step}")
-    else:
-        st.caption("Il workflow produttivo (Fase 1) apparirà qui…")
+                st.caption("Thoughts will appear here as the agent runs…")
 
-    # ── 2. Bill of Materials ─────────────────────────────────────────────────
-    st.subheader("📋 Bill of Materials")
-    bom: list[dict] = state.get("bom", [])
-    if bom:
-        _col_map = {
-            "name":            "Component",
-            "material":        "Material",
-            "weight_kg":       "Weight (kg)",
-            "functional_role": "Functional Role",
-            "baseline_environmental_impact": f"Impact ({settings.environmental_impact_unit}/kg)",
-            "baseline_cost":   "Cost Tier",
-            "lifespan_years":  "Lifespan (yr)",
-        }
-        bom_df = pd.DataFrame(bom)
-        bom_df = bom_df.rename(columns={k: v for k, v in _col_map.items() if k in bom_df.columns})
-        _display_cols = [v for k, v in _col_map.items() if v in bom_df.columns]
-        st.dataframe(bom_df[_display_cols], width="stretch", hide_index=True)
-    else:
-        st.caption("The BOM will appear after the agent decomposes the product…")
+        # ── 1.5 Workflow Produttivo ──────────────────────────────────────────────
+        if phase in ["workflow", "material", "lca", "mcda", "complete", "error"]:
+            st.subheader("⚙️ Manufacturing Workflow")
+            workflow = state.get("workflow_steps", [])
+            if workflow:
+                st.markdown("The creation of the object has been broken down into the following processes:")
+                for idx, step in enumerate(workflow, 1):
+                    if isinstance(step, dict):
+                        p_name = step.get('process_name', '')
+                        p_out = step.get('process_output', '')
+                        st.markdown(f"**Phase {idx}**: {p_name} ➔ **Output**: {p_out}")
+                    else:
+                        st.markdown(f"**Phase {idx}**: {step}")
+            else:
+                st.caption("The manufacturing workflow (Phase 1) will appear here…")
 
-    # ── 3. LCA Alternatives (shown mid-flow in interactive mode) ─────────────
-    lca_results: list[dict] = state.get("lca_results", [])
-    mcda_scores: list[dict] = state.get("mcda_scores", [])
+        # ── 2. Bill of Materials ─────────────────────────────────────────────────
+        if phase in ["workflow", "material", "lca", "mcda", "complete", "error"]:
+            st.subheader("📋 Bill of Materials")
+            bom: list[dict] = state.get("bom", [])
+            if bom:
+                _col_map = {
+                    "name":            "Component",
+                    "material":        "Material",
+                    "weight_kg":       "Weight (kg)",
+                    "functional_role": "Functional Role",
+                    "baseline_environmental_impact": f"Impact ({settings.environmental_impact_unit}/kg)",
+                    "baseline_cost":   "Cost Tier",
+                    "lifespan_years":  "Lifespan (yr)",
+                }
+                bom_df = pd.DataFrame(bom)
+                bom_df = bom_df.rename(columns={k: v for k, v in _col_map.items() if k in bom_df.columns})
+                _display_cols = [v for k, v in _col_map.items() if v in bom_df.columns]
+                st.dataframe(bom_df[_display_cols], width="stretch", hide_index=True)
+            else:
+                st.caption("The BOM will appear after the agent decomposes the product…")
 
-    if lca_results and not mcda_scores:
-        st.subheader("🔬 Material Alternatives (LCA Validated)")
-        for comp in lca_results:
-            with st.expander(
-                f"**{comp['component_name']}** — original: {comp['original_material']} "
-                f"({comp['original_scores']['environmental_impact']:.3f} {settings.environmental_impact_unit})"
-            ):
-                rows = []
-                for alt in comp.get("alternatives", []):
-                    rows.append(
+        # ── 3. LCA Alternatives (shown mid-flow in interactive mode) ─────────────
+        if phase in ["material", "lca", "mcda", "complete", "error"]:
+            lca_results: list[dict] = state.get("lca_results", [])
+            mcda_scores: list[dict] = state.get("mcda_scores", [])
+
+            if lca_results and not mcda_scores:
+                st.subheader("🔬 Material Alternatives (LCA Validated)")
+                for comp in lca_results:
+                    with st.expander(
+                        f"**{comp['component_name']}** — original: {comp['original_material']} "
+                        f"({comp['original_scores']['environmental_impact']:.3f} {settings.environmental_impact_unit})"
+                    ):
+                        rows = []
+                        for alt in comp.get("alternatives", []):
+                            rows.append(
+                                {
+                                    "Alternative": alt["name"],
+                                    f"Impact ({settings.environmental_impact_unit})": alt["scores"]["environmental_impact"],
+                                    "Energy (MJ)": alt["scores"]["energy_mj"],
+                                    "Cost Tier": alt["scores"]["cost_tier"],
+                                    "Aesthetic Match": f"{alt['aesthetic_match']:.0%}",
+                                    "Structural Match": f"{alt['structural_match']:.0%}",
+                                }
+                            )
+                        if rows:
+                            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+        # ── 4. Environmental Impact Chart + MCDA Recommendations ──────────────────────────
+        if phase in ["lca", "mcda", "complete", "error"]:
+            mcda_scores: list[dict] = state.get("mcda_scores", [])
+            lca_results: list[dict] = state.get("lca_results", [])
+            if mcda_scores and lca_results:
+                st.subheader("🌍 Environmental Impact: Original vs. Optimised")
+
+                orig_co2_lookup: dict[str, float] = {
+                    r["component_name"]: r["original_scores"]["environmental_impact"]
+                    for r in lca_results
+                }
+
+                chart_rows = []
+                for comp in mcda_scores:
+                    name = comp["component_name"]
+                    orig = orig_co2_lookup.get(name, 0.0)
+                    best = comp.get("best_alternative")
+                    optimised = orig * (1 - best["impact_reduction_pct"] / 100) if best else orig
+                    chart_rows.append(
                         {
-                            "Alternative": alt["name"],
-                            f"Impact ({settings.environmental_impact_unit})": alt["scores"]["environmental_impact"],
-                            "Energy (MJ)": alt["scores"]["energy_mj"],
-                            "Cost Tier": alt["scores"]["cost_tier"],
-                            "Aesthetic Match": f"{alt['aesthetic_match']:.0%}",
-                            "Structural Match": f"{alt['structural_match']:.0%}",
+                            "Component": name,
+                            f"Original ({settings.environmental_impact_unit})": round(orig, 3),
+                            f"Optimised ({settings.environmental_impact_unit})": round(optimised, 3),
                         }
                     )
-                if rows:
-                    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-    # ── 4. Environmental Impact Chart + MCDA Recommendations ──────────────────────────
-    if mcda_scores and lca_results:
-        st.subheader("🌍 Environmental Impact: Original vs. Optimised")
+                if chart_rows:
+                    chart_df = pd.DataFrame(chart_rows).set_index("Component")
+                    st.bar_chart(chart_df, color=["#e05555", "#33b86c"])
 
-        orig_co2_lookup: dict[str, float] = {
-            r["component_name"]: r["original_scores"]["environmental_impact"]
-            for r in lca_results
-        }
+                # MCDA Recommendations table
+                st.subheader("🏆 MCDA Recommendations")
+                summary_rows = []
+                for comp in mcda_scores:
+                    best = comp.get("best_alternative")
+                    if best:
+                        summary_rows.append(
+                            {
+                                "Component": comp["component_name"],
+                                "Original Material": comp["original_material"],
+                                "Best Alternative": best["name"],
+                                "Impact Reduction (%)": f"{best['impact_reduction_pct']:.1f}%",
+                                "Cost Δ (tier)": best["cost_delta"],
+                                "MCDA Score": round(best["mcda_score"], 3),
+                                "Justification": best["justification"],
+                            }
+                        )
+                if summary_rows:
+                    st.dataframe(
+                        pd.DataFrame(summary_rows),
+                        width="stretch",
+                        hide_index=True,
+                    )
 
-        chart_rows = []
-        for comp in mcda_scores:
-            name = comp["component_name"]
-            orig = orig_co2_lookup.get(name, 0.0)
-            best = comp.get("best_alternative")
-            optimised = orig * (1 - best["impact_reduction_pct"] / 100) if best else orig
-            chart_rows.append(
-                {
-                    "Component": name,
-                    f"Original ({settings.environmental_impact_unit})": round(orig, 3),
-                    f"Optimised ({settings.environmental_impact_unit})": round(optimised, 3),
-                }
-            )
+                if phase == "complete":
+                    st.divider()
+                    st.success("✅ Optimisation complete! Download the full report below.")
 
-        if chart_rows:
-            chart_df = pd.DataFrame(chart_rows).set_index("Component")
-            st.bar_chart(chart_df, color=["#e05555", "#33b86c"])
+                    # Cache PDF bytes in session state so WeasyPrint only runs once per
+                    # completed analysis, not on every Streamlit rerender.
+                    _pdf_key = "cached_pdf_bytes"
+                    _pdf_state_key = "cached_pdf_state_id"
+                    import hashlib, json
+                    _pdf_key_content = hashlib.md5(
+                        json.dumps(state.get("mcda_scores", []), sort_keys=True).encode()
+                    ).hexdigest()
+                    
+                    if (
+                        _pdf_key not in st.session_state
+                        or st.session_state.get(_pdf_state_key) != _pdf_key_content
+                    ):
+                        st.session_state[_pdf_key] = generate_pdf_report(state)
+                        st.session_state[_pdf_state_key] = _pdf_key_content
+                    pdf_bytes = st.session_state[_pdf_key]
 
-        # MCDA Recommendations table
-        st.subheader("🏆 MCDA Recommendations")
-        summary_rows = []
-        for comp in mcda_scores:
-            best = comp.get("best_alternative")
-            if best:
-                summary_rows.append(
-                    {
-                        "Component": comp["component_name"],
-                        "Original Material": comp["original_material"],
-                        "Best Alternative": best["name"],
-                        "Impact Reduction (%)": f"{best['impact_reduction_pct']:.1f}%",
-                        "Cost Δ (tier)": best["cost_delta"],
-                        "MCDA Score": round(best["mcda_score"], 3),
-                        "Justification": best["justification"],
-                    }
-                )
-        if summary_rows:
-            st.dataframe(
-                pd.DataFrame(summary_rows),
-                width="stretch",
-                hide_index=True,
-            )
-
-        st.divider()
-        st.success("✅ Optimisation complete! Download the full report below.")
-
-        # Cache PDF bytes in session state so WeasyPrint only runs once per
-        # completed analysis, not on every Streamlit rerender.
-        _pdf_key = "cached_pdf_bytes"
-        _pdf_state_key = "cached_pdf_state_id"
-        if (
-            _pdf_key not in st.session_state
-            or st.session_state.get(_pdf_state_key) != id(state.get("mcda_scores"))
-        ):
-            st.session_state[_pdf_key] = generate_pdf_report(state)
-            st.session_state[_pdf_state_key] = id(state.get("mcda_scores"))
-        pdf_bytes = st.session_state[_pdf_key]
-
-        if pdf_bytes is not None:
-            col_pdf, col_html = st.columns(2)
-            with col_pdf:
-                st.download_button(
-                    label="📄 Download Optimization Report (PDF)",
-                    data=pdf_bytes,
-                    file_name="optimization_report.pdf",
-                    mime="application/pdf",
-                    width="stretch",
-                    type="primary",
-                )
-            with col_html:
-                st.download_button(
-                    label="📥 Download Optimization Report (HTML)",
-                    data=generate_html_report(state),
-                    file_name="optimization_report.html",
-                    mime="text/html",
-                    width="stretch",
-                )
-        else:
-            st.warning(
-                "PDF export is unavailable: WeasyPrint system dependencies "
-                "(Cairo/Pango/GTK3) are not installed on this machine. "
-                "See README for installation instructions."
-            )
-            st.download_button(
-                label="📥 Download Optimization Report (HTML)",
-                data=generate_html_report(state),
-                file_name="optimization_report.html",
-                mime="text/html",
-                width="stretch",
-            )
-
-    elif not mcda_scores and not lca_results:
-        st.caption(
-            "Environmental impact comparison and material recommendations will appear "
-            "after the full analysis completes…"
-        )
+                    if pdf_bytes is not None:
+                        col_pdf, col_html = st.columns(2)
+                        with col_pdf:
+                            st.download_button(
+                                label="📄 Download Optimization Report (PDF)",
+                                data=pdf_bytes,
+                                file_name="optimization_report.pdf",
+                                mime="application/pdf",
+                                width="stretch",
+                                type="primary",
+                            )
+                        with col_html:
+                            st.download_button(
+                                label="📥 Download Optimization Report (HTML)",
+                                data=generate_html_report(state),
+                                file_name="optimization_report.html",
+                                mime="text/html",
+                                width="stretch",
+                            )
+                    else:
+                        st.warning(
+                            "PDF export is unavailable: WeasyPrint system dependencies "
+                            "(Cairo/Pango/GTK3) are not installed on this machine. "
+                            "See README for installation instructions."
+                        )
+                        st.download_button(
+                            label="📥 Download Optimization Report (HTML)",
+                            data=generate_html_report(state),
+                            file_name="optimization_report.html",
+                            mime="text/html",
+                            width="stretch",
+                        )

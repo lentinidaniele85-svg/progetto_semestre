@@ -85,8 +85,58 @@ class CSVLcaClient(LCADataProvider):
                 # Se 'market' è nel nome del processo, il trasporto è già incluso
                 # nel dataset ecoinvent — non va contato una seconda volta (T02)
                 "is_market": "market" in str(row["processname"]).lower(),
+                "energy_mj": self._estimate_energy_mj(row),
+                "cost_per_kg": self._estimate_cost_per_kg(row),
             }
         return None
+
+    def _estimate_cost_per_kg(self, row: pd.Series) -> float:
+        name = str(row.get("outputname", "")).lower()
+        if "steel" in name or "iron" in name:
+            return 0.8
+        if "aluminum" in name or "aluminium" in name:
+            return 2.5
+        if "copper" in name:
+            return 6.0
+        if "polypropylene" in name or "pp " in name:
+            return 1.2
+        if "polyethylene" in name or "pe " in name or "hdpe" in name or "ldpe" in name:
+            return 1.0
+        if "nylon" in name or "polyamide" in name:
+            return 3.0
+        if "pet " in name or "polyethylene terephthalate" in name:
+            return 1.3
+        if "wood" in name or "timber" in name:
+            return 0.5
+        if "glass" in name:
+            return 0.7
+        if "carbon fiber" in name or "carbon fibre" in name:
+            return 20.0
+        return 1.0
+
+    def _estimate_energy_mj(self, row: pd.Series) -> float:
+        name = str(row.get("outputname", "")).lower()
+        if "steel" in name or "iron" in name:
+            return 30.0
+        if "aluminum" in name or "aluminium" in name:
+            return 200.0
+        if "copper" in name:
+            return 100.0
+        if "polypropylene" in name or "pp " in name:
+            return 80.0
+        if "polyethylene" in name or "pe " in name or "hdpe" in name or "ldpe" in name:
+            return 75.0
+        if "nylon" in name or "polyamide" in name:
+            return 120.0
+        if "pet " in name or "polyethylene terephthalate" in name:
+            return 85.0
+        if "wood" in name or "timber" in name:
+            return 15.0
+        if "glass" in name:
+            return 15.0
+        if "carbon fiber" in name or "carbon fibre" in name:
+            return 300.0
+        return 50.0
 
     async def get_impact_scores(self, material_id: str) -> dict | None:
         """Return LCA impact scores from DataSet.xlsx. Returns None if material_id is not found."""
@@ -98,9 +148,9 @@ class CSVLcaClient(LCADataProvider):
         return {
             "environmental_impact": float(r["climatechangeimpact"]),
             "is_market": "market" in str(r["processname"]).lower(),
-            "energy_mj":            0.0,
-            "water_l":              0.0,
-            "cost_tier":            0,
-            "cost_per_kg":          0.0,
+            "energy_mj":            self._estimate_energy_mj(r),
+            "water_l":              1.0,
+            "cost_tier":            1,
+            "cost_per_kg":          self._estimate_cost_per_kg(r),
             "lifespan_years":       10.0,
         }

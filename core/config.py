@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, model_validator
 from typing import Literal
 
 
@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     openrouter_model: str = Field(
         default="openai/gpt-4o-mini", alias="OPENROUTER_MODEL"
     )
+
+    @model_validator(mode="after")
+    def validate_api_key(self) -> "Settings":
+        if self.llm_provider == "openrouter":
+            if not self.openrouter_api_key or self.openrouter_api_key == "your_key_here":
+                raise ValueError("ERRORE: OPENROUTER_API_KEY non è configurata correttamente. Impostala nel file .env o come variabile di ambiente.")
+        return self
 
     lca_data_source: Literal["csv", "ecoinvent_api"] = Field(
         default="csv", alias="LCA_DATA_SOURCE"

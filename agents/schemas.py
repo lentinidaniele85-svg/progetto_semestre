@@ -75,6 +75,7 @@ class WorkflowAndBOMResponse(BaseModel):
     is_interview_complete: bool = Field(description="True se l'utente ha fornito Massa, Materiale, Geografia e i 4 Pilastri.")
     interview_questions: List[str] = Field(default_factory=list, description="Domande se i dati obbligatori mancano.")
     geography: Optional[str] = Field(default=None, description="Luogo o distanza per la logistica.")
+    distance_km: Optional[float] = Field(default=None, description="Distanza stimata in km tra fornitore e sito, se esplicitata")
     total_mass_kg: Optional[float] = Field(default=None, description="Massa totale in kg per la logistica.")
     assumptions_made: List[str] = Field(default_factory=list, description="Assunzioni fatte dall'IA (es. materiale inferito).")
     workflow_steps: List[WorkflowStep] = Field(default_factory=list, description="List of generic sequential manufacturing processes.")

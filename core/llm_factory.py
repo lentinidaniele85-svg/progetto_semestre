@@ -18,7 +18,7 @@ class ModelFactory:
 
     @staticmethod
     def get_model() -> BaseChatModel:
-        cache_key = f"openrouter:{settings.openrouter_model}"
+        cache_key = f"{settings.llm_provider}:{settings.openrouter_model}"
         if cache_key not in _model_cache:
             _model_cache[cache_key] = ChatOpenAI(
                 model=settings.openrouter_model,

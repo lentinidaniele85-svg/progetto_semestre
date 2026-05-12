@@ -303,6 +303,107 @@ is_market == False.
 
 ---
 
+## PROMPT T03 — Rotazione API Key + Secrets Management
+
+```text
+Sei un esperto DevOps e Python Developer che lavora su un agente AI per l'ottimizzazione sostenibile dei materiali.
+
+TASK: Metti in sicurezza la gestione della API Key rimuovendola dal file hardcoded e configurando il sistema in modo sicuro.
+
+CONTESTO:
+- Attualmente la API key (OpenRouter/Ollama) potrebbe essere esposta nel file .env.
+- È una pratica di sicurezza critica non tracciare mai chiavi API in repository Git.
+- Il sistema usa `pydantic-settings` in `core/config.py` per leggere le configurazioni.
+
+MODIFICHE RICHIESTE:
+1. Rimuovi la chiave reale dal file `.env` (lascia solo un placeholder es. `OPENROUTER_API_KEY=your_key_here`).
+2. Verifica che il file `.env` sia incluso correttamente nel `.gitignore`.
+3. Aggiorna il `README.md` aggiungendo un paragrafo chiaro con le istruzioni per impostare la chiave (es. tramite export nel terminale o creando un `.env` locale).
+4. (Opzionale ma consigliato) In `core/config.py`, aggiungi una validazione che sollevi un errore esplicito all'avvio se la chiave non è configurata e si sta tentando di usare OpenRouter.
+
+VINCOLI:
+- NON rompere il meccanismo di lettura della configurazione. L'app deve continuare a funzionare se la variabile d'ambiente è impostata nel sistema o nel .env locale.
+
+OUTPUT ATTESO: File `.env` ripulito, `.gitignore` verificato, `README.md` e `core/config.py` aggiornati.
+```
+
+---
+
+## PROMPT T04 — Fallback LCA Visibile
+
+```text
+Sei un Senior Python Developer su un progetto LangGraph.
+
+TASK: Rendi visibile all'utente ogni volta che il sistema usa il valore LCA di fallback (3.5 kg CO₂).
+
+CONTESTO:
+- Quando `find_closest_match` fallisce, il sistema assegna un valore silente di 3.5 kg CO₂/kg.
+- Questo viola la "Regola d'Oro" di trasparenza del progetto: ogni assunzione deve essere dichiarata.
+- L'AgentState ha un campo `assumptions_list`.
+
+MODIFICHE RICHIESTE:
+1. In `agents/workflow_node.py` (circa L76-78), quando si usa il fallback di 3.5, aggiungi una stringa al dizionario restituito per aggiornare `assumptions_list` (es. "Dati LCA non trovati per [materiale], usato valore di fallback 3.5 kg CO₂/kg").
+2. In `agents/nodes.py` in `lca_validator` (circa L277-279) implementa lo stesso pattern per il fallback.
+3. In `agents/nodes.py` nel path delle alternative fallback (circa L296-299) implementa lo stesso pattern.
+
+VINCOLI:
+- NON modificare o rimuovere il fallback stesso, in quanto serve per la robustezza del sistema. Devi solo aggiungere la notifica.
+- L'aggiunta a `assumptions_list` in un nodo LangGraph che ritorna un dict si sommerà ai valori esistenti se lo stato usa l'operatore "add".
+
+VERIFICA: Analizzando un materiale sconosciuto (es. "vibranium"), deve apparire un warning esplicito nella UI per il fallback.
+```
+
+---
+
+## PROMPT T06 — Rimozione Codice Morto da nodes.py
+
+```text
+Sei un Software Engineer focalizzato sul refactoring e pulizia del codice.
+
+TASK: Elimina il codice obsoleto e non utilizzato dal file `agents/nodes.py`.
+
+CONTESTO:
+- Le funzioni `bom_decomposer` e `semantic_ideator` presenti in `nodes.py` (circa righe 111-235) sono obsolete.
+- Le loro logiche sono state sostituite rispettivamente dai file `workflow_node.py` e `material_node.py`.
+- Il codice morto crea confusione.
+
+MODIFICHE RICHIESTE:
+1. Elimina completamente la funzione `bom_decomposer`.
+2. Elimina completamente la funzione `semantic_ideator`.
+3. Controlla se le costanti `PROCESS_IMPACTS` e `TRANSPORT_IMPACT_PER_TKM` (circa L239-245) sono ancora usate da `lca_validator` all'interno dello stesso file. Se sì, MANTIENILE.
+
+VINCOLI:
+- NON eliminare le costanti globali se sono usate da altre funzioni attive nel file.
+- Esegui una rapida ricerca globale prima di cancellare per assicurarti che `bom_decomposer` e `semantic_ideator` non siano importate da qualche parte (es. test vecchi).
+
+OUTPUT ATTESO: Il file `agents/nodes.py` ripulito dalle due funzioni morte.
+```
+
+---
+
+## PROMPT T08 — Distanza Logistica da LLM o Warning Visibile
+
+```text
+Sei un AI Engineer che sviluppa workflow LangGraph.
+
+TASK: Rendi trasparente l'assunzione sulla distanza logistica di default (500 km).
+
+CONTESTO:
+- Attualmente in `workflow_node.py`, il campo `geography` viene estratto dall'LLM, ma il sistema usa sempre un valore hardcoded di `500.0` km per i calcoli logistici, ignorando il testo.
+- Questo causa un problema di trasparenza per l'utente.
+
+MODIFICHE RICHIESTE:
+1. Aggiorna lo schema Pydantic `WorkflowAndBOMResponse` aggiungendo un campo opzionale `distance_km: Optional[float] = Field(description="Distanza stimata in km tra fornitore e sito, se esplicitata")`.
+2. Aggiorna il prompt del nodo `workflow_bom_ideator` per istruire l'LLM ad estrarre la distanza se viene menzionata nel testo.
+3. In `workflow_node.py` (circa L97-103), verifica se `distance_km` è presente. Se manca, imposta `dist_km = 500.0` e AGGIUNGI un messaggio ad `assumptions_list` (es. "Distanza logistica non specificata per [componente], usato valore di default 500 km").
+
+VINCOLI:
+- Non far bloccare l'esecuzione se la distanza non viene trovata, il fallback a 500 è il comportamento corretto, ma deve essere loggato in `assumptions_list`.
+
+OUTPUT ATTESO: Schemi aggiornati, prompt migliorato e calcolo della distanza con alert sulle assunzioni.
+```
+
+---
 
 ## PROMPT T05 — Progress Tracker Reale
 
@@ -434,6 +535,186 @@ VINCOLI:
 
 VERIFICA: Eseguire l'intero flusso interactive e verificare che tutti 
 e 3 i checkpoint (constraints, interview, workflow) funzionino correttamente.
+```
+
+---
+
+## PROMPT T09 — Unifica Lingua (tutto inglese)
+
+```text
+Sei uno UX Developer e Python Engineer per una Web App Streamlit.
+
+TASK: Unifica la lingua del sistema esclusivamente all'inglese per evitare un misto italo/inglese incoerente.
+
+CONTESTO:
+- Il sistema attualmente mischia messaggi UI, Thought Log e prompt in italiano e inglese.
+- Per scalabilità e target professionale, tutto deve essere rigorosamente in inglese.
+
+MODIFICHE RICHIESTE:
+1. In `ui/app.py`:
+   - Traduci i messaggi in L221-226 (messaggi di benvenuto/assistente).
+   - Traduci la mappatura dei nomi degli step in L461-468 (es. "Analisi Entità" -> "Entity Analysis").
+   - Traduci le stringhe statiche (es. L502 "La creazione dell'oggetto...").
+2. In `agents/nodes.py` e `agents/workflow_node.py`:
+   - Traduci tutte le stringhe iniettate nel `thought_log`.
+   - Traduci i messaggi di errore restituiti nei return dictionary.
+3. Nei Prompt YAML (`prompts/` o nel codice se inline):
+   - Assicurati che le istruzioni di sistema chiedano all'LLM di rispondere esclusivamente in lingua inglese.
+
+VINCOLI:
+- Fai attenzione a non alterare le chiavi dei dizionari che la logica interna utilizza (es. i nomi delle variabili o delle fasi). Traduci SOLO le stringhe di output visibili all'utente.
+```
+
+---
+
+## PROMPT T10 — Confirm Dialog per Restart Session
+
+```text
+Sei uno sviluppatore UI Streamlit avanzato.
+
+TASK: Implementa una modale di conferma per evitare la perdita accidentale dei dati della sessione in corso.
+
+CONTESTO:
+- Cliccare sul pulsante "Restart Session" o su "Reject" azzera lo stato (tramite `handle_reject()`).
+- Serve un dialog (Modale) di conferma (`st.dialog`).
+
+MODIFICHE RICHIESTE:
+1. In `ui/app.py`, implementa la decorazione `@st.dialog("Restart Session")` su una nuova funzione `_confirm_restart()`.
+2. La funzione deve contenere un testo di avviso: "This will delete the current analysis. Are you sure?"
+3. Aggiungi due colonne con i bottoni "Yes, restart" (type="primary") e "Cancel".
+4. Se l'utente clicca Yes, esegui `handle_reject()` e `st.rerun()`. Se Cancel, solo `st.rerun()`.
+5. Modifica il comportamento del bottone "Restart Session" originale in modo che invochi questa funzione modale al click.
+
+VINCOLI:
+- Utilizza la feature nativa `st.dialog` introdotta recentemente in Streamlit.
+- Assicurati che lo stato venga cancellato SOLO se l'utente conferma.
+```
+
+---
+
+## PROMPT T11 — Progressive Disclosure Dashboard
+
+```text
+Sei un Frontend Developer specializzato in Streamlit UI/UX.
+
+TASK: Nascondere le sezioni del dashboard di destra e mostrarle progressivamente in base all'avanzamento.
+
+CONTESTO:
+- Il layout di destra in `ui/app.py` mostra spazi vuoti o espander non necessari prima che i dati vengano generati.
+- Si deve usare `state.get("current_phase")` per determinare cosa renderizzare.
+- Le fasi sono: "init", "constraints", "interview", "workflow", "material", "lca", "mcda", "complete".
+
+MODIFICHE RICHIESTE IN ui/app.py (Colonna destra):
+1. Leggi la fase attuale: `phase = st.session_state.agent_state.get("current_phase", "init")`
+2. Applica la seguente logica condizionale per i blocchi UI:
+   - Se phase == "init": mostra solo un messaggio di onboarding iniziale.
+   - Se phase in ["constraints", "interview"]: mostra il Thought Log (e le eventuali domande).
+   - Se phase == "workflow": mostra Thought Log + la sezione Workflow + la BOM.
+   - Se phase == "material": mostra quanto sopra + le Alternative Materiali LCA.
+   - Se phase in ["lca", "mcda"]: mostra quanto sopra + Grafici LCA + Tabella MCDA.
+   - Se phase == "complete": mostra tutto + i bottoni di Download (PDF/HTML).
+
+VINCOLI:
+- Assicurati che se `current_phase` non è definito, il comportamento di default non causi crash, ma si comporti in modo aggraziato mostrando il minimo indispensabile (init).
+```
+
+---
+
+## PROMPT T12 — Toast/Warning per Assunzioni e Fallback
+
+```text
+Sei un UX Engineer per Streamlit.
+
+TASK: Rendi le assunzioni del sistema più visibili, distinguendo tra normali logiche e fallback critici.
+
+CONTESTO:
+- Le stringhe in `assumptions_list` sono l'unico modo per far capire all'utente che il sistema ha inferito un dato o usato un fallback.
+- Attualmente vengono mostrate tutte insieme, senza distinzione di severità.
+
+MODIFICHE RICHIESTE IN ui/app.py:
+1. Trova il loop che renderizza le `assumptions_list` nel dashboard.
+2. Modifica la logica di rendering per ispezionare il testo della stringa:
+   - Se il testo contiene parole chiave come "fallback" o "3.5", mostralo usando `st.error(f"⚠️ Data fallback: {assumption}", icon="🔴")`.
+   - Altrimenti (assunzioni normali, es. logistica), mostralo usando `st.warning(f"ℹ️ Assumption: {assumption}", icon="🟡")`.
+
+VINCOLI:
+- Questa modifica deve essere fatta esclusivamente a livello di componente UI nel file `app.py`.
+- NON modificare il modo in cui i nodi LangGraph aggiungono gli elementi alla lista.
+```
+
+---
+
+## PROMPT T13 — Thread-Safe LCA Singleton
+
+```text
+Sei un Senior Backend Engineer.
+
+TASK: Prevenire race conditions nella creazione del provider LCA in un ambiente Streamlit multi-utente.
+
+CONTESTO:
+- `data/provider_factory.py` memorizza le istanze in un dizionario globale `_provider_cache`.
+- Quando più utenti si connettono contemporaneamente all'app Streamlit, l'accesso a questo dizionario senza lock può generare race conditions e istanziazioni multiple scorrette.
+
+MODIFICHE RICHIESTE IN data/provider_factory.py:
+1. Importa il modulo standard `threading`.
+2. Istanzia un lock globale: `_cache_lock = threading.Lock()`.
+3. Nel metodo `get_lca_provider()`, avvolgi la logica di istanziazione e caching (`if source not in _provider_cache:...`) all'interno di un blocco `with _cache_lock:`.
+
+VINCOLI:
+- Mantenere la logica Singleton. L'obiettivo è solo rendere l'accesso thread-safe.
+
+OUTPUT ATTESO: Il file `provider_factory.py` aggiornato con il `threading.Lock`.
+```
+
+---
+
+## PROMPT T14 — LLM Caching in ModelFactory
+
+```text
+Sei un Software Architect esperto di LangChain.
+
+TASK: Ottimizzare l'istanziazione degli LLM aggiungendo un caching a livello di Factory.
+
+CONTESTO:
+- Ad ogni esecuzione di nodo, `core/llm_factory.py` nel metodo `get_model()` crea una nuova istanza di `BaseChatModel`.
+- Questo comporta overhead e spreco di memoria (soprattutto in loop lunghi o con molti nodi).
+- Vogliamo cachare le istanze dei modelli.
+
+MODIFICHE RICHIESTE IN core/llm_factory.py:
+1. Definisci un dizionario privato a livello di modulo o classe: `_model_cache: dict[str, BaseChatModel] = {}`.
+2. Modifica la funzione `get_model()`:
+   - Genera una chiave univoca basata sul provider e modello scelto (es. `key = f"{settings.llm_provider}:{settings.ollama_model or settings.openrouter_model}"`).
+   - Verifica se la `key` è già nella cache. Se sì, restituisci l'istanza.
+   - Altrimenti, prosegui con la normale logica di istanziazione, salvala in `_model_cache[key]`, e restituiscila.
+
+VINCOLI:
+- Rispetta le logiche attuali che switchano tra `ChatOllama` e `ChatOpenAI` basate sui settings. Aggiungi solo il livello di caching a monte.
+```
+
+---
+
+## PROMPT T16 — MCDA Reale (Energy + Cost dal Dataset)
+
+```text
+Sei un Data Engineer e Backend Developer.
+
+TASK: Implementare il recupero di dati reali di energia e costo dal dataset (o usare stime strutturate) invece di mockare tutto a 0.0.
+
+CONTESTO:
+- Attualmente `csv_lca_client.py` popola `energy_mj` e `cost_per_kg` a `0.0`.
+- Questo invalida il 60% dei pesi MCDA che si basano su queste metriche, rendendo inutile il ranking.
+
+MODIFICHE RICHIESTE:
+1. Analizza le colonne esposte in `DataSet.xlsx`.
+2. Se esistono colonne rilevanti per l'energia e il costo, modificale in `get_impact_scores()` nel file `data/csv_lca_client.py`. (es. `float(r.get("energyimpact", 0.0))`).
+3. Se non esistono, implementa una funzione `_estimate_cost_per_kg(row)` e `_estimate_energy_mj(row)` all'interno di `csv_lca_client.py` che assegni valori realistici basati su categorizzazione testuale (es. se "polypropylene" è nel nome, costo = 1.2; se "steel", costo = 0.8).
+4. Sostituisci i mock `0.0` con la chiamata a queste logiche.
+5. In `agents/nodes.py` (`lca_validator`), assicurati che questi valori vegano letti correttamente nel dizionario dei risultati.
+
+VINCOLI:
+- Assicurarsi che i valori non siano mai esattamente `0.0` per evitare problemi nelle funzioni di normalizzazione (divisioni per zero o min/max identici). Imposta sempre un valore di default base (es. 1.0).
+
+OUTPUT ATTESO: L'engine MCDA diventerà funzionale e varierà dinamicamente sulla base dei materiali trovati.
 ```
 
 ---

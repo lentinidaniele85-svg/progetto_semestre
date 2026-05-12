@@ -1,7 +1,9 @@
+import threading
 from core.config import settings
 from data.lca_interface import LCADataProvider
 
 _provider_cache: dict[str, LCADataProvider] = {}
+_cache_lock = threading.Lock()
 
 
 def get_lca_provider() -> LCADataProvider:
@@ -15,14 +17,19 @@ def get_lca_provider() -> LCADataProvider:
     if source in _provider_cache:
         return _provider_cache[source]
 
-    if source == "csv":
-        from data.csv_lca_client import CSVLcaClient
-        _provider_cache[source] = CSVLcaClient()
-        return _provider_cache[source]
+    with _cache_lock:
+        # Double-checked locking
+        if source in _provider_cache:
+            return _provider_cache[source]
 
-    if source == "ecoinvent_api":
-        from data.ecoinvent_api_client import EcoinventAPIClient
-        _provider_cache[source] = EcoinventAPIClient()
-        return _provider_cache[source]
+        if source == "csv":
+            from data.csv_lca_client import CSVLcaClient
+            _provider_cache[source] = CSVLcaClient()
+            return _provider_cache[source]
 
-    raise ValueError(f"Unknown LCA data source: {source!r}")
+        if source == "ecoinvent_api":
+            from data.ecoinvent_api_client import EcoinventAPIClient
+            _provider_cache[source] = EcoinventAPIClient()
+            return _provider_cache[source]
+
+        raise ValueError(f"Unknown LCA data source: {source!r}")

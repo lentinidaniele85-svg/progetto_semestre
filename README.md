@@ -20,13 +20,20 @@ Questo script attiverà l'ambiente e aprirà l'interfaccia utente (Streamlit) di
 
 ## ⚙️ Configurazione (.env)
 
-Puoi copiare `.env.example` in `.env` per modificare le impostazioni del modello o dei pesi dell'MCDA:
+Il progetto utilizza variabili d'ambiente per la configurazione e per la gestione sicura dei segreti (come le chiavi API). **Attenzione: non committare mai la tua chiave API!**
+
+Per configurare l'applicazione, crea un file `.env` nella root del progetto (puoi usare `.env.example` come base se presente) oppure esporta le variabili nel terminale prima dell'avvio (es: `set OPENROUTER_API_KEY=sk-or-...` su Windows).
+
+Esempio di configurazione nel file `.env`:
+```env
+OPENROUTER_API_KEY=sk-or-your-actual-api-key
+```
 
 | Variabile | Descrizione | Opzioni |
 | --- | --- | --- |
 | `LLM_PROVIDER` | Quale backend LLM usare | `ollama`, `openrouter` |
 | `OLLAMA_MODEL` | Nome del modello locale | es. `llama3`, `mistral` |
-| `OPENROUTER_API_KEY` | Chiave API di OpenRouter | — |
+| `OPENROUTER_API_KEY` | Chiave API di OpenRouter | **Obbligatoria** per OpenRouter |
 | `OPENROUTER_MODEL` | Modello su OpenRouter | es. `openai/gpt-3.5-turbo` |
 | `LCA_DATA_SOURCE` | Sorgente dati LCA | `csv`, `ecoinvent_api` |
 

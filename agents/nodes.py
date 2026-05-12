@@ -70,7 +70,7 @@ def _invoke_structured(chain, llm, schema, messages, *, retries: int = 1):
 
 def constraint_extractor(state: AgentState) -> dict:
     thought_log = list(state.get("thought_log", []))
-    thought_log.append("Estrazione vincoli dall'input utente...")
+    thought_log.append("Extracting constraints from user input...")
 
     llm = ModelFactory.get_model()
     chain = llm.with_structured_output(ConstraintsExtract)
@@ -78,11 +78,11 @@ def constraint_extractor(state: AgentState) -> dict:
     messages = [
         SystemMessage(
             content=(
-                "Sei un analista di product design. Estrai i '4 Pilastri' "
-                "(Dimensioni, Carico Meccanico, Ambiente d'uso, Target di Durata) "
-                "dalla descrizione del prodotto, insieme a budget, estetica, "
-                "requisiti strutturali e limite di peso. "
-                "Restituisci solo i campi esplicitamente dichiarati o fortemente impliciti."
+                "You are a product design analyst. Extract the '4 Pillars' "
+                "(Dimensions, Mechanical Load, Usage Environment, Target Lifespan) "
+                "from the product description, along with budget, aesthetics, "
+                "structural requirements, and weight limit. "
+                "Return ONLY the fields explicitly stated or strongly implied. RESPOND EXCLUSIVELY IN ENGLISH."
             )
         ),
         HumanMessage(content=state.get("user_input", "")),
@@ -97,7 +97,7 @@ def constraint_extractor(state: AgentState) -> dict:
         constraints = result.model_dump(exclude_none=True)
     except Exception as exc:
         logger.debug("constraint_extractor: LLM fallito — %s", exc)
-        thought_log.append(f"⚠ Estrazione vincoli fallita ({exc}), utilizzo vincoli vuoti.")
+        thought_log.append(f"⚠ Constraint extraction failed ({exc}), using empty constraints.")
         constraints = {}
 
     return {
@@ -128,7 +128,7 @@ TRANSPORT_IMPACT_PER_TKM = 0.05
 
 async def lca_validator(state: AgentState) -> dict:
     thought_log = list(state.get("thought_log", []))
-    thought_log.append("Esecuzione LCA Deterministico (Materiale + Processo + Trasporto) × Massa...")
+    thought_log.append("Executing Deterministic LCA (Material + Process + Transport) × Mass...")
 
     provider = get_lca_provider()
     lca_results: list[dict] = []
@@ -157,13 +157,17 @@ async def lca_validator(state: AgentState) -> dict:
         if orig_match:
             mat_impact = orig_match["environmental_impact"]
             is_market = orig_match.get("is_market", False)  # T02: campo corretto
+            mat_energy = orig_match.get("energy_mj", 50.0)
+            mat_cost = orig_match.get("cost_per_kg", 1.0)
         else:
             mat_impact = 3.5  # fallback
             is_market = False
+            mat_energy = 50.0
+            mat_cost = 1.0
             # T04: fallback visibile all'utente
             assumptions.append(
-                f"Dati LCA non trovati per '{original_material}': "
-                f"usato valore di fallback 3.5 kg CO₂/kg (impatto PP vergine)."
+                f"LCA data not found for '{original_material}': "
+                f"using fallback value 3.5 kg CO₂/kg (virgin PP impact)."
             )
 
         transport_impact = 0.0 if is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
@@ -172,10 +176,10 @@ async def lca_validator(state: AgentState) -> dict:
         orig_scores = {
             "environmental_impact": total_orig_impact,
             "unit_material_impact": mat_impact,
-            "energy_mj": 0.0,
-            "water_l": 0.0,
+            "energy_mj": mat_energy * mass_kg,
+            "water_l": 1.0 * mass_kg,
             "cost_tier": 1,
-            "cost_per_kg": 1.5,
+            "cost_per_kg": mat_cost,
             "lifespan_years": 10.0,
         }
 
@@ -185,13 +189,17 @@ async def lca_validator(state: AgentState) -> dict:
             if alt_match:
                 alt_mat_impact = alt_match["environmental_impact"]
                 alt_is_market = alt_match.get("is_market", False)  # T02: campo corretto
+                alt_energy = alt_match.get("energy_mj", 50.0)
+                alt_cost = alt_match.get("cost_per_kg", 1.0)
             else:
                 alt_mat_impact = 3.5
                 alt_is_market = False
+                alt_energy = 50.0
+                alt_cost = 1.0
                 # T04: fallback visibile
                 assumptions.append(
-                    f"Dati LCA non trovati per alternativa '{alt['name']}': "
-                    f"usato valore di fallback 3.5 kg CO₂/kg."
+                    f"LCA data not found for alternative '{alt['name']}': "
+                    f"using fallback value 3.5 kg CO₂/kg."
                 )
 
             alt_transport = 0.0 if alt_is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
@@ -200,10 +208,10 @@ async def lca_validator(state: AgentState) -> dict:
             scores = {
                 "environmental_impact": total_alt_impact,
                 "unit_material_impact": alt_mat_impact,
-                "energy_mj": 0.0,
-                "water_l": 0.0,
+                "energy_mj": alt_energy * mass_kg,
+                "water_l": 1.0 * mass_kg,
                 "cost_tier": 1,
-                "cost_per_kg": 1.5,
+                "cost_per_kg": alt_cost,
                 "lifespan_years": 10.0,
             }
 
@@ -244,7 +252,7 @@ def _safe_delta(orig: float, alt: float) -> float:
 
 def mcda_scorer(state: AgentState) -> dict:
     thought_log = list(state.get("thought_log", []))
-    thought_log.append("Calcolo score MCDA e selezione materiali ottimali...")
+    thought_log.append("Calculating MCDA score and selecting optimal materials...")
 
     from core.config import settings
     w_co2 = settings.weight_co2
@@ -342,15 +350,15 @@ async def human_feedback_processor(state: AgentState) -> dict:
     current_phase = state.get("current_phase", "constraints")
 
     if not feedback:
-        thought_log.append("Nessun feedback in attesa — prosecuzione approvata.")
+        thought_log.append("No pending feedback — continuation approved.")
         return {"pending_feedback": None, "thought_log": thought_log}
 
     lower = feedback.lower()
 
     # Fase di intervista: qualsiasi risposta è una risposta alle domande mancanti
     if current_phase == "interview":
-        new_user_input = state.get("user_input", "") + f"\n\n[Risposta Utente Intervista]: {feedback}"
-        thought_log.append("Risposta intervista aggiunta all'input utente.")
+        new_user_input = state.get("user_input", "") + f"\n\n[User Interview Response]: {feedback}"
+        thought_log.append("Interview response added to user input.")
         return {
             "user_input": new_user_input,
             "pending_feedback": None,
@@ -359,32 +367,32 @@ async def human_feedback_processor(state: AgentState) -> dict:
 
     # Fase di revisione (constraints o workflow): controlla approvazione
     if lower in _APPROVE_TOKENS or any(lower.startswith(t + " ") for t in _APPROVE_TOKENS):
-        thought_log.append("Utente ha approvato — prosecuzione senza modifiche.")
+        thought_log.append("User approved — proceeding without modifications.")
         return {"pending_feedback": None, "thought_log": thought_log}
 
-    thought_log.append(f"Applicazione feedback utente: \"{feedback}\"")
+    thought_log.append(f"Applying user feedback: \"{feedback}\"")
 
     llm = ModelFactory.get_model()
 
     system_msg = (
-        "Sei un assistente di product design. L'utente ha scritto un feedback in linguaggio naturale "
-        "per modificare la Bill of Materials o i vincoli di design.\n\n"
-        "Restituisci SOLO JSON valido — nessun markdown, nessuna spiegazione — con questa struttura:\n"
+        "You are a product design assistant. The user provided natural language feedback "
+        "to modify the Bill of Materials or design constraints.\n\n"
+        "Return ONLY valid JSON — no markdown, no explanations — with this structure:\n"
         "{\n"
         "  \"bom_modifications\": [\n"
-        "    {\"component_name\": \"<nome>\", "
-        "\"field\": \"material|weight_kg|functional_role\", \"new_value\": \"<valore>\"}\n"
+        "    {\"component_name\": \"<name>\", "
+        "\"field\": \"material|weight_kg|functional_role\", \"new_value\": \"<value>\"}\n"
         "  ],\n"
-        "  \"constraint_modifications\": {\"<chiave>\": \"<valore>\"},\n"
-        "  \"thought\": \"Breve spiegazione di cosa è cambiato\"\n"
+        "  \"constraint_modifications\": {\"<key>\": \"<value>\"},\n"
+        "  \"thought\": \"Brief explanation of what changed\"\n"
         "}\n"
-        "Usa array/oggetti vuoti quando non ci sono modifiche per quella categoria."
+        "Use empty arrays/objects when there are no modifications for that category. RESPOND EXCLUSIVELY IN ENGLISH."
     )
 
     user_msg = (
-        f"BOM attuale:\n{json.dumps(state.get('bom', []), indent=2)}\n\n"
-        f"Vincoli attuali:\n{json.dumps(state.get('constraints', {}), indent=2)}\n\n"
-        f"Feedback utente: \"{feedback}\""
+        f"Current BOM:\n{json.dumps(state.get('bom', []), indent=2)}\n\n"
+        f"Current Constraints:\n{json.dumps(state.get('constraints', {}), indent=2)}\n\n"
+        f"User Feedback: \"{feedback}\""
     )
 
     try:
@@ -409,8 +417,8 @@ async def human_feedback_processor(state: AgentState) -> dict:
         constraints = dict(state.get("constraints", {}))
         constraints.update(patches.get("constraint_modifications", {}))
 
-        thought = patches.get("thought", "Modifiche utente applicate")
-        thought_log.append(f"Feedback applicato: {thought}")
+        thought = patches.get("thought", "User modifications applied")
+        thought_log.append(f"Feedback applied: {thought}")
 
         return {
             "bom": bom,
@@ -420,5 +428,5 @@ async def human_feedback_processor(state: AgentState) -> dict:
         }
 
     except Exception as exc:
-        thought_log.append(f"Impossibile parsare il feedback (prosecuzione invariata): {exc}")
+        thought_log.append(f"Failed to parse feedback (proceeding unchanged): {exc}")
         return {"pending_feedback": None, "thought_log": thought_log}
