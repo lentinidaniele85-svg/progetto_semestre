@@ -16,7 +16,7 @@ class ConstraintsExtract(BaseModel):
 
 class BOMComponent(BaseModel):
     name: str
-    material: str
+    material: str = Field(description="Strictly the English name of the raw material (e.g. 'polypropylene', 'steel'). Do NOT include geography, weight, or context.")
     weight_kg: float = Field(default=0.0)
     functional_role: Optional[str] = Field(
         default=None,
@@ -38,6 +38,8 @@ class BOMComponent(BaseModel):
     geometry: str = Field(description="La geometria del componente (es. Corpi Cavi, Pezzi Pieni Complessi, Film, Profili/Tubi).")
     manufacturing_process: str = Field(description="Il processo di produzione forzato tramite tabella geometrie.")
     unit_impact_value: float = Field(default=0.0, description="Il valore di impatto unitario (es: kg CO2/kg).")
+    estimated_cost_per_kg: Optional[float] = Field(default=None, description="The estimated market price per kg found online.")
+    estimated_energy_mj: Optional[float] = Field(default=None, description="The estimated energy in MJ required found online.")
 
 
 class BOMExtract(BaseModel):
@@ -53,6 +55,8 @@ class MaterialAlternative(BaseModel):
         default=None,
         description="Expected cost impact vs. original: 'Cheaper', 'Same', or 'More Expensive'.",
     )
+    estimated_cost_per_kg: Optional[float] = Field(default=None, description="The estimated market price per kg found online.")
+    estimated_energy_mj: Optional[float] = Field(default=None, description="The estimated energy in MJ required found online.")
 
 
 class ComponentAlternatives(BaseModel):

@@ -13,7 +13,43 @@ def generate_html_report(state: dict) -> str:
     bom: list[dict] = state.get("bom", [])
     lca_results: list[dict] = state.get("lca_results", [])
     mcda_scores: list[dict] = state.get("mcda_scores", [])
+    workflow_steps: list[dict] = state.get("workflow_steps", [])
+    assumptions_list: list[str] = state.get("assumptions_list", [])
     generated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    ita = False
+    ita_words = {"di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "una", "e", "o", "ma", "che", "non", "si", "mi", "ti", "ci", "vi", "kg", "cina", "propilene", "plastica"}
+    words = set(user_input.lower().replace(".", " ").replace(",", " ").split())
+    if len(words.intersection(ita_words)) > 0:
+        ita = True
+
+    t_report = "Report di Ottimizzazione Sostenibile" if ita else "Sustainable Product Optimization Report"
+    t_generated = "Generato il" if ita else "Generated"
+    t_powered = "Powered by LangGraph & LCA data" if ita else "Powered by LangGraph & LCA data"
+    t_bom = "Distinta Base Originale (BOM)" if ita else "Original Bill of Materials"
+    t_comp = "Componente" if ita else "Component"
+    t_mat = "Materiale" if ita else "Material"
+    t_weight = "Peso (kg)" if ita else "Weight (kg)"
+    t_opt_sum = "Riepilogo Ottimizzazione" if ita else "Optimization Summary"
+    t_orig_mat = "Materiale Originale" if ita else "Original Material"
+    t_rec_alt = "Alternativa Consigliata" if ita else "Recommended Alternative"
+    t_co2_red = "Riduzione CO&#8322;" if ita else "CO&#8322; Reduction"
+    t_just = "Giustificazione" if ita else "Justification"
+    t_co2_impact = "Impatto CO&#8322;" if ita else "CO&#8322; Impact Comparison"
+    t_orig_co2 = "CO&#8322; Totale Originale" if ita else "Original Total CO&#8322;"
+    t_opt_co2 = "CO&#8322; Totale Ottimizzato" if ita else "Optimised Total CO&#8322;"
+    t_red_over = "Riduzione Totale" if ita else "Overall Reduction"
+    t_improv = "miglioramento" if ita else "improvement"
+    t_break = "Dettaglio per Componente" if ita else "Per-Component Breakdown"
+    t_orig_co2_kg = "CO&#8322; Originale (kg)" if ita else "Original CO&#8322; (kg)"
+    t_opt_co2_kg = "CO&#8322; Ottimizzato (kg)" if ita else "Optimised CO&#8322; (kg)"
+    t_red = "Riduzione" if ita else "Reduction"
+    t_workflow = "Tabella dei Processi (Workflow)" if ita else "Tabella dei Processi (Workflow)"
+    t_phase = "Fase" if ita else "Phase"
+    t_proc = "Processo Manifatturiero" if ita else "Manufacturing Process"
+    t_out = "Output Atteso" if ita else "Expected Output"
+    t_assump = "Assunzioni e Dati Esterni (Ricerca Online)" if ita else "Assumptions & External Data (Online Search)"
+
 
     orig_co2: dict[str, float] = {
         r["component_name"]: r["original_scores"]["environmental_impact"]
@@ -70,12 +106,30 @@ def generate_html_report(state: dict) -> str:
             )
         return rows
 
+    def _workflow_rows() -> str:
+        rows = ""
+        for i, step in enumerate(workflow_steps, 1):
+            if isinstance(step, dict):
+                rows += f"<tr><td>{i}</td><td>{step.get('process_name', '')}</td><td>{step.get('process_output', '')}</td></tr>"
+            else:
+                rows += f"<tr><td>{i}</td><td colspan='2'>{step}</td></tr>"
+        return rows
+
+    def _assumptions_list() -> str:
+        if not assumptions_list:
+            return "<p>Nessun dato esterno o assunzione aggiuntiva trovata.</p>"
+        html = "<ul>"
+        for a in assumptions_list:
+            html += f"<li>{a}</li>"
+        html += "</ul>"
+        return html
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sustainable Product Optimization Report</title>
+<title>{t_report}</title>
 <style>
   *, *::before, *::after {{ box-sizing: border-box; }}
   body {{
@@ -166,65 +220,82 @@ def generate_html_report(state: dict) -> str:
 </head>
 <body>
 
-<h1>&#127807; Sustainable Product Optimization Report</h1>
-<div class="subtitle">Generated {generated_at} &nbsp;&middot;&nbsp; Powered by LangGraph &amp; LCA data</div>
+<h1>&#127807; {t_report}</h1>
+<div class="subtitle">{t_generated} {generated_at} &nbsp;&middot;&nbsp; {t_powered}</div>
 
 <div class="meta">
   <strong>Product Description:</strong> {user_input}
 </div>
 
-<h2>&#128203; Original Bill of Materials</h2>
+<h2>&#128203; {t_bom}</h2>
 <table>
-  <thead><tr><th>Component</th><th>Material</th><th>Weight (kg)</th></tr></thead>
+  <thead><tr><th>{t_comp}</th><th>{t_mat}</th><th>{t_weight}</th></tr></thead>
   <tbody>{_bom_rows()}</tbody>
 </table>
 
-<h2>&#128300; Optimization Summary</h2>
+<h2>&#128300; {t_opt_sum}</h2>
 <table>
   <thead>
     <tr>
-      <th>Component</th>
-      <th>Original Material</th>
-      <th>Recommended Alternative</th>
-      <th>CO&#8322; Reduction</th>
+      <th>{t_comp}</th>
+      <th>{t_orig_mat}</th>
+      <th>{t_rec_alt}</th>
+      <th>{t_co2_red}</th>
       <th>MCDA Score</th>
-      <th>Justification</th>
+      <th>{t_just}</th>
     </tr>
   </thead>
   <tbody>{_opt_rows()}</tbody>
 </table>
 
-<h2>&#127757; CO&#8322; Impact Comparison</h2>
+<h2>&#127757; {t_co2_impact}</h2>
 <div class="cards">
   <div class="card orig">
-    <div class="label">Original Total CO&#8322;</div>
+    <div class="label">{t_orig_co2}</div>
     <div class="value">{total_orig:.3f}</div>
     <div class="label">kg CO&#8322;-eq</div>
   </div>
   <div class="card opt">
-    <div class="label">Optimised Total CO&#8322;</div>
+    <div class="label">{t_opt_co2}</div>
     <div class="value">{total_opt:.3f}</div>
     <div class="label">kg CO&#8322;-eq</div>
   </div>
   <div class="card delta">
-    <div class="label">Overall Reduction</div>
+    <div class="label">{t_red_over}</div>
     <div class="value">{reduction_pct:.1f}%</div>
-    <div class="label">improvement</div>
+    <div class="label">{t_improv}</div>
   </div>
 </div>
 
-<h3 style="margin-top:32px;color:#0f3460">Per-Component Breakdown</h3>
+<h3 style="margin-top:32px;color:#0f3460">{t_break}</h3>
 <table>
   <thead>
     <tr>
-      <th>Component</th>
-      <th>Original CO&#8322; (kg)</th>
-      <th>Optimised CO&#8322; (kg)</th>
-      <th>Reduction</th>
+      <th>{t_comp}</th>
+      <th>{t_orig_co2_kg}</th>
+      <th>{t_opt_co2_kg}</th>
+      <th>{t_red}</th>
     </tr>
   </thead>
   <tbody>{_impact_rows()}</tbody>
 </table>
+
+<h2>&#128736;&#65039; {t_workflow}</h2>
+<table>
+  <thead>
+    <tr>
+      <th>{t_phase}</th>
+      <th>{t_proc}</th>
+      <th>{t_out}</th>
+    </tr>
+  </thead>
+  <tbody>{_workflow_rows()}</tbody>
+</table>
+
+<h2>&#128269; {t_assump}</h2>
+<div class="meta" style="border-left-color: #f59e0b; background: #fffdf5;">
+  {_assumptions_list()}
+</div>
 
 <footer>
   Sustainable Product Optimization Agent &nbsp;&middot;&nbsp; LangGraph pipeline &nbsp;&middot;&nbsp; {generated_at}

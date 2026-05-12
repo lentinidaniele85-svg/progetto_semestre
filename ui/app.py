@@ -65,6 +65,7 @@ _DEFAULTS: dict = {
     "mode": "interactive",
     "_graph_mode": "interactive",
     "_last_error": None,  # persists error messages across st.rerun()
+    "is_italian": False,
 }
 
 for _k, _v in _DEFAULTS.items():
@@ -152,12 +153,11 @@ def _stream(graph, input_state_or_none, config, status_label: str) -> dict:
             asyncio.run(_consume())
         status.update(label="✓ Done", state="complete", expanded=False)
 
-    # Append new thought entries as a 🤖 assistant message in the conversation
+    # Append new thought entries as a "thought" role message in the conversation
     all_thoughts: list[str] = last.get("thought_log", [])
     new_thoughts = all_thoughts[prev_thought_count:]
     if new_thoughts:
-        lines = "\n".join(f"• {t}" for t in new_thoughts)
-        _add_message("assistant", f"🤖 **Agent steps:**\n{lines}")
+        _add_message("thought", new_thoughts)
 
     return last
 
@@ -166,7 +166,7 @@ def _stream(graph, input_state_or_none, config, status_label: str) -> dict:
 # Helper: chat history
 # ---------------------------------------------------------------------------
 
-def _add_message(role: str, content: str) -> None:
+def _add_message(role: str, content: any) -> None:
     st.session_state.chat_history.append({"role": role, "content": content})
 
 
@@ -174,23 +174,36 @@ def _add_message(role: str, content: str) -> None:
 # Action handlers
 # ---------------------------------------------------------------------------
 
-def handle_input(user_input: str) -> None:
-    """Start a fresh agent run for a new product description."""
+def _process_agent_run(user_input: str, is_feedback: bool = False) -> None:
     _add_message("user", user_input)
-    st.session_state._last_error = None  # clear previous errors
-    mode = st.session_state.mode
+    st.session_state._last_error = None
     graph = _get_graph()
     config = _thread_config()
+    mode = st.session_state.mode
 
-    initial_state = {
-        "user_input": user_input,
-        "mode": mode,
-        "thought_log": [],
-        "chat_history": list(st.session_state.chat_history),
-    }
+    is_ita = st.session_state.get("is_italian", False)
+    
+    if is_feedback:
+        graph.update_state(
+            config,
+            {
+                "pending_feedback": user_input,
+                "chat_history": list(st.session_state.chat_history),
+            },
+        )
+        stream_input = None
+        status_msg = "🤖 Elaborazione del feedback..." if is_ita else "🤖 Processing your feedback..."
+    else:
+        stream_input = {
+            "user_input": user_input,
+            "mode": mode,
+            "thought_log": [],
+            "chat_history": list(st.session_state.chat_history),
+        }
+        status_msg = "🤖 L'agente sta analizzando il tuo prodotto..." if is_ita else "🤖 Agent is analysing your product..."
 
     try:
-        _stream(graph, initial_state, config, "🤖 Agent is analysing your product...")
+        _stream(graph, stream_input, config, status_msg)
     except _CONNECTION_ERRORS:
         msg = (
             "Unable to connect to the LLM model. "
@@ -205,84 +218,11 @@ def handle_input(user_input: str) -> None:
         st.session_state.awaiting_approval = None
         return
 
-    if mode == "auto":
+    if not is_feedback and mode == "auto":
         _add_message(
             "assistant",
-            "Analysis complete! See the dashboard on the right for the full results.",
+            "Analisi completata! Consulta la dashboard a destra per i risultati completi." if is_ita else "Analysis complete! See the dashboard on the right for the full results.",
         )
-        st.session_state.awaiting_approval = None
-    else:
-        next_node = _next_interrupt(graph, config)
-        phase = st.session_state.graph_state.get("current_phase", "")
-        if next_node == "human_feedback_processor" and phase == "constraints":
-            constraints = st.session_state.graph_state.get("constraints", {})
-            if constraints:
-                constraints_str = "\n".join([f"- **{k}**: {v}" for k, v in constraints.items()])
-            else:
-                constraints_str = "- *(No specific constraints extracted)*"
-            _add_message(
-                "assistant",
-                f"I've extracted these constraints and specifications from your input:\n{constraints_str}\n\n"
-                "**Are these okay or would you like to add/modify some?** Type your changes or press **Approve** to continue."
-            )
-            st.session_state.awaiting_approval = "constraints"
-        elif next_node == "human_feedback_processor" and phase == "interview":
-            questions = st.session_state.graph_state.get("pending_feedback", "Can you provide more specific details about dimensions, load, and usage environment?")
-            _add_message(
-                "assistant",
-                f"I need a few more details before proceeding:\n\n{questions}\n\n"
-                "**Please reply with the missing specifications.**",
-            )
-            st.session_state.awaiting_approval = "interview"
-        elif next_node == "human_feedback_processor" and phase == "workflow":
-            _add_message(
-                "assistant",
-                "I've mapped the required manufacturing processes and component breakdown.\n\n"
-                "**Please verify the workflow above.** Type any modifications or hit **Approve** to proceed with Material Ideation.",
-            )
-            st.session_state.awaiting_approval = "workflow"
-        elif phase == "error":
-            _add_message("assistant", "An error occurred during analysis. Please press **Restart Session** to try again.")
-            st.session_state.awaiting_approval = None
-        else:
-            _add_message("assistant", "Analysis complete!")
-            st.session_state.awaiting_approval = None
-
-
-def handle_feedback(user_input: str) -> None:
-    """
-    Resume the graph from its current checkpoint.
-    Injects the user's message as pending_feedback so human_feedback_processor
-    can apply modifications or simply pass through on approval.
-    """
-    _add_message("user", user_input)
-    graph = _get_graph()
-    config = _thread_config()
-
-    st.session_state._last_error = None  # clear previous errors
-
-    # Inject feedback into graph state before resuming
-    graph.update_state(
-        config,
-        {
-            "pending_feedback": user_input,
-            "chat_history": list(st.session_state.chat_history),
-        },
-    )
-
-    try:
-        _stream(graph, None, config, "🤖 Processing your feedback...")
-    except _CONNECTION_ERRORS:
-        msg = (
-            "Unable to connect to the LLM model. "
-            "Check that the OPENROUTER_API_KEY is valid and that you have an internet connection."
-        )
-        st.session_state._last_error = msg
-        st.session_state.awaiting_approval = None
-        return
-    except Exception as exc:
-        msg = f"An unexpected error occurred: {exc}"
-        st.session_state._last_error = msg
         st.session_state.awaiting_approval = None
         return
 
@@ -294,37 +234,68 @@ def handle_feedback(user_input: str) -> None:
         if constraints:
             constraints_str = "\n".join([f"- **{k}**: {v}" for k, v in constraints.items()])
         else:
-            constraints_str = "- *(No specific constraints extracted)*"
-        _add_message(
-            "assistant",
-            f"I've extracted these constraints and specifications from your input:\n{constraints_str}\n\n"
-            "**Are these okay or would you like to add/modify some?** Type your changes or press **Approve** to continue."
-        )
+            constraints_str = "- *(Nessun vincolo specifico estratto)*" if is_ita else "- *(No specific constraints extracted)*"
+        
+        if is_ita:
+            msg = f"Ho estratto questi vincoli e specifiche dal tuo input:\n{constraints_str}\n\n**Vanno bene o vuoi aggiungere/modificare qualcosa?** Scrivi le modifiche o premi **Approva** per continuare."
+        else:
+            msg = f"I've extracted these constraints and specifications from your input:\n{constraints_str}\n\n**Are these okay or would you like to add/modify some?** Type your changes or press **Approve** to continue."
+        
+        _add_message("assistant", msg)
         st.session_state.awaiting_approval = "constraints"
     elif next_node == "human_feedback_processor" and phase == "interview":
         questions = st.session_state.graph_state.get("pending_feedback", "More details needed.")
-        _add_message(
-            "assistant",
-            f"Still missing some details:\n\n{questions}\n\n**Please provide the specs.**",
-        )
+        if not is_feedback and questions == "More details needed.":
+             questions = "Can you provide more specific details about dimensions, load, and usage environment?"
+        msg = f"Mi servono alcuni dettagli aggiuntivi prima di procedere:\n\n{questions}\n\n**Per favore, rispondi con le specifiche mancanti.**" if not is_feedback else f"Mancano ancora alcuni dettagli:\n\n{questions}\n\n**Per favore, fornisci le specifiche.**"
+        _add_message("assistant", msg)
         st.session_state.awaiting_approval = "interview"
     elif next_node == "human_feedback_processor" and phase == "workflow":
-        _add_message(
-            "assistant",
-            "I've mapped the required manufacturing processes and component breakdown.\n\n"
-            "**Please verify the workflow above.** Type any modifications or hit **Approve** to proceed with Material Ideation.",
-        )
+        if is_ita:
+            msg = "Ho mappato i processi manifatturieri e scomposto i componenti.\n\n**Per favore, verifica il workflow qui sopra.** Scrivi le modifiche o premi **Approva** per procedere con l'ideazione dei materiali."
+        else:
+            msg = "I've mapped the required manufacturing processes and component breakdown.\n\n**Please verify the workflow above.** Type any modifications or hit **Approve** to proceed with Material Ideation."
+        _add_message("assistant", msg)
         st.session_state.awaiting_approval = "workflow"
     elif phase == "error":
-        _add_message("assistant", "An error occurred during analysis. Please press **Restart Session** to try again.")
+        msg = "Si è verificato un errore durante l'analisi. Premi **Riavvia Sessione** per riprovare." if is_ita else "An error occurred during analysis. Please press **Restart Session** to try again."
+        _add_message("assistant", msg)
         st.session_state.awaiting_approval = None
     else:
-        _add_message(
-            "assistant",
-            "Optimisation complete! Final MCDA scores and the best material "
-            "recommendations are shown in the dashboard.",
-        )
+        if not is_feedback:
+            msg = "Analisi completata!" if is_ita else "Analysis complete!"
+        else:
+            msg = "Ottimizzazione completata! I punteggi MCDA finali e i materiali consigliati sono mostrati nella dashboard." if is_ita else "Optimisation complete! Final MCDA scores and the best material recommendations are shown in the dashboard."
+        _add_message("assistant", msg)
         st.session_state.awaiting_approval = None
+
+
+def _is_italian_text(text: str) -> bool:
+    if not text: return False
+    words = set(text.lower().replace(".", " ").replace(",", " ").split())
+    ita_words = {"di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "una", "e", "o", "ma", "che", "non", "si", "mi", "ti", "ci", "vi", "kg", "cina", "propilene", "plastica", "acciaio", "legno"}
+    return len(words.intersection(ita_words)) > 0
+
+def handle_input(user_input: str) -> None:
+    """Start a fresh agent run for a new product description."""
+    # Hard Reset e Statelessness: Tabula Rasa
+    st.session_state.graph = None
+    st.session_state.graph_state = {}
+    st.session_state.awaiting_approval = None
+    st.session_state.thread_id = str(uuid.uuid4())
+    st.session_state.pop("cached_pdf_bytes", None)
+    st.session_state.pop("cached_pdf_state_id", None)
+    st.session_state.is_italian = _is_italian_text(user_input)
+    _process_agent_run(user_input, is_feedback=False)
+
+
+def handle_feedback(user_input: str) -> None:
+    """
+    Resume the graph from its current checkpoint.
+    Injects the user's message as pending_feedback so human_feedback_processor
+    can apply modifications or simply pass through on approval.
+    """
+    _process_agent_run(user_input, is_feedback=True)
 
 
 def handle_reject() -> None:
@@ -335,22 +306,21 @@ def handle_reject() -> None:
     st.session_state.thread_id = str(uuid.uuid4())
     st.session_state.pop("cached_pdf_bytes", None)
     st.session_state.pop("cached_pdf_state_id", None)
-    _add_message(
-        "assistant",
-        "Session reset. Please describe a new product to optimise.",
-    )
-
+    is_ita = st.session_state.get("is_italian", False)
+    msg = "Sessione riavviata. Descrivi un nuovo prodotto da ottimizzare." if is_ita else "Session reset. Please describe a new product to optimise."
+    _add_message("assistant", msg)
 
 @st.dialog("Restart Session")
 def _confirm_restart():
-    st.write("This will delete the current analysis. Are you sure?")
+    is_ita = st.session_state.get("is_italian", False)
+    st.write("Questa operazione eliminerà l'analisi corrente. Sei sicuro?" if is_ita else "This will delete the current analysis. Are you sure?")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Yes, restart", type="primary", use_container_width=True):
+        if st.button("Sì, riavvia" if is_ita else "Yes, restart", type="primary", use_container_width=True):
             handle_reject()
             st.rerun()
     with col2:
-        if st.button("Cancel", use_container_width=True):
+        if st.button("Annulla" if is_ita else "Cancel", use_container_width=True):
             st.rerun()
 
 
@@ -378,15 +348,28 @@ with left_col:
             border-radius: 8px;
         }
         
-        /* Modern gradients for buttons */
-        div.stButton > button {
+        /* Modern gradients for primary buttons */
+        div.stButton > button[kind="primary"] {
             background: linear-gradient(135deg, #10b981 0%, #059669 100%);
             color: white;
             border: none;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             transition: all 0.3s ease;
         }
-        div.stButton > button:hover {
+        div.stButton > button[kind="primary"]:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        /* Destructive styling for secondary buttons */
+        div.stButton > button[kind="secondary"] {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            color: white;
+            border: none;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+        div.stButton > button[kind="secondary"]:hover {
             transform: translateY(-2px);
             box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
         }
@@ -410,22 +393,30 @@ with left_col:
 
     # Chat history
     for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+        if msg["role"] == "thought":
+            with st.expander("🧠 Agent Reasoning", expanded=False):
+                for i, thought in enumerate(msg["content"], 1):
+                    st.markdown(f"**{i}.** {thought}")
+        else:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
 
+    is_ita = st.session_state.get("is_italian", False)
+    
     # Quick-action buttons — contextual grouping based on agent state
     if st.session_state.awaiting_approval:
         if st.session_state.awaiting_approval == "interview":
-            stage_label = "Interview"
+            stage_label = "Intervista" if is_ita else "Interview"
         elif st.session_state.awaiting_approval == "constraints":
-            stage_label = "Constraints"
+            stage_label = "Vincoli" if is_ita else "Constraints"
         else:
             stage_label = "Workflow"
         st.divider()
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
+            btn_lbl = f"✅ Approva {stage_label}" if is_ita else f"✅ Approve {stage_label}"
             if st.button(
-                f"✅ Approve {stage_label}",
+                btn_lbl,
                 width="stretch",
                 type="primary",
             ):
@@ -433,11 +424,13 @@ with left_col:
                 if not st.session_state._last_error:
                     st.rerun()
         with btn_col2:
-            if st.button("❌ Restart Session", width="stretch"):
+            btn_restart = "❌ Riavvia Sessione" if is_ita else "❌ Restart Session"
+            if st.button(btn_restart, width="stretch"):
                 _confirm_restart()
     elif st.session_state.graph_state:
         st.divider()
-        if st.button("❌ Restart Session", width="stretch"):
+        btn_restart = "❌ Riavvia Sessione" if is_ita else "❌ Restart Session"
+        if st.button(btn_restart, width="stretch"):
             _confirm_restart()
 
     # Show persisted error message (survives st.rerun)
@@ -447,16 +440,18 @@ with left_col:
     # Chat input — NEVER disabled; placeholder adapts to co-pilot state
     if st.session_state.awaiting_approval:
         if st.session_state.awaiting_approval == "interview":
-            stage = "interview questions"
+            stage = "alle domande" if is_ita else "interview questions"
         elif st.session_state.awaiting_approval == "constraints":
-            stage = "constraints"
+            stage = "sui vincoli" if is_ita else "constraints"
         else:
-            stage = "Workflow"
-        placeholder = (
-            f"Please answer the {stage} or type 'Approve' to continue…"
-        )
+            stage = "sul workflow" if is_ita else "Workflow"
+            
+        if is_ita:
+            placeholder = f"Rispondi {stage} o scrivi 'Approve' per continuare…"
+        else:
+            placeholder = f"Please answer the {stage} or type 'Approve' to continue…"
     else:
-        placeholder = "Describe a product to optimise (e.g. 'An office chair')…"
+        placeholder = "Descrivi un prodotto da ottimizzare (es. 'Una sedia da ufficio')…" if is_ita else "Describe a product to optimise (e.g. 'An office chair')…"
 
     user_input = st.chat_input(placeholder)
     if user_input:
@@ -475,24 +470,21 @@ with right_col:
     phase = state.get("current_phase", "init")
 
     if phase == "init":
-        st.info(
-            "👋 **Welcome to the Sustainable Product Optimizer!**\n\n"
-            "Describe a product on the left to begin. The dashboard will progressively "
-            "reveal insights, BOM decomposition, and environmental metrics as the analysis advances.",
-            icon="ℹ️"
-        )
+        msg = ("👋 **Benvenuto nel Sustainable Product Optimizer!**\n\nDescrivi un prodotto qui a sinistra per iniziare. La dashboard mostrerà progressivamente le informazioni, la distinta base (BOM) e le metriche ambientali mano a mano che l'analisi avanza." if is_ita else "👋 **Welcome to the Sustainable Product Optimizer!**\n\nDescribe a product on the left to begin. The dashboard will progressively reveal insights, BOM decomposition, and environmental metrics as the analysis advances.")
+        st.info(msg, icon="ℹ️")
     else:
         # ── 0. 7-Steps LCA Workflow Tracker ─────────────────────────────────────
         current_step = state.get("current_lca_step", 1)
-        st.subheader("🏁 7-Steps Progress")
+        st.subheader("🏁 Progresso 7-Passi" if is_ita else "🏁 7-Steps Progress")
+        
         steps = [
-            "Entity Analysis",
-            "Aggregated Lookup",
-            "Material Selection",
-            "Geometric Constraint",
-            "BOM Breakdown",
-            "Logistics Calculation",
-            "Validation & Gap Analysis"
+            "Estrazione Entità" if is_ita else "Entity Extraction",
+            "Raccolta Dati" if is_ita else "Data Collection",
+            "Workflow & BOM" if is_ita else "Workflow & BOM",
+            "Alternative Materiali" if is_ita else "Material Alternatives",
+            "Validazione LCA" if is_ita else "LCA Validation",
+            "Punteggio MCDA" if is_ita else "MCDA Scoring",
+            "Report Finale" if is_ita else "Final Report"
         ]
         cols = st.columns(len(steps))
         for i, col in enumerate(cols):
@@ -509,7 +501,7 @@ with right_col:
 
         assumptions = state.get("assumptions_list", [])
         if assumptions:
-            st.markdown("**Assumptions and simplifications made by the AI:**")
+            st.markdown("**Assunzioni e Dati Esterni:**")
             for a in assumptions:
                 if "fallback" in a.lower() or "3.5" in a:
                     st.error(f"⚠️ Data fallback: {a}", icon="🔴")
@@ -518,26 +510,27 @@ with right_col:
 
         # T07: mostra errore esplicito se current_phase == "error"
         if phase == "error":
+            err_lbl = "Errore durante l'analisi:" if is_ita else "Error during analysis:"
+            err_msg = state.get('error_message', 'Errore sconosciuto.' if is_ita else 'Unknown error.')
+            err_retry = "Premi **Riavvia Sessione** per riprovare." if is_ita else "Press **Restart Session** to try again."
             st.error(
-                f"❌ **Error during analysis:** {state.get('error_message', 'Unknown error.')}\n\n"
-                "Press **Restart Session** to try again.",
+                f"❌ **{err_lbl}** {err_msg}\n\n{err_retry}",
                 icon="🔴",
             )
 
-        # ── 1. Thought Log ──────────────────────────────────────────────────────
-        thought_log: list[str] = state.get("thought_log", [])
-        with st.expander(
-            f"🧠 Agent Thought Log ({len(thought_log)} steps)",
-            expanded=bool(thought_log),
-        ):
-            if thought_log:
-                for i, thought in enumerate(thought_log, 1):
-                    st.markdown(f"**{i}.** {thought}")
+        # ── Phase 1-2: Input & Constraints ──────────────────────────────────────
+        if phase in ["init", "constraints", "interview"]:
+            st.subheader("📋 Extracted Constraints")
+            constraints = state.get("constraints", {})
+            if constraints:
+                for k, v in constraints.items():
+                    st.markdown(f"- **{k}**: {v}")
             else:
-                st.caption("Thoughts will appear here as the agent runs…")
+                st.caption("Constraints will appear here once extracted from your input…")
 
+        # ── Phase 3-4: BOM & Workflow ───────────────────────────────────────────
         # ── 1.5 Workflow Produttivo ──────────────────────────────────────────────
-        if phase in ["workflow", "material", "lca", "mcda", "complete", "error"]:
+        if phase in ["workflow", "material"]:
             st.subheader("⚙️ Manufacturing Workflow")
             workflow = state.get("workflow_steps", [])
             if workflow:
@@ -553,7 +546,7 @@ with right_col:
                 st.caption("The manufacturing workflow (Phase 1) will appear here…")
 
         # ── 2. Bill of Materials ─────────────────────────────────────────────────
-        if phase in ["workflow", "material", "lca", "mcda", "complete", "error"]:
+        if phase in ["workflow", "material"]:
             st.subheader("📋 Bill of Materials")
             bom: list[dict] = state.get("bom", [])
             if bom:
@@ -573,8 +566,9 @@ with right_col:
             else:
                 st.caption("The BOM will appear after the agent decomposes the product…")
 
-        # ── 3. LCA Alternatives (shown mid-flow in interactive mode) ─────────────
-        if phase in ["material", "lca", "mcda", "complete", "error"]:
+        # ── Phase 5-6: LCA & MCDA ───────────────────────────────────────────────
+        # ── 3. LCA Alternatives ─────────────
+        if phase in ["lca", "mcda", "complete", "error"]:
             lca_results: list[dict] = state.get("lca_results", [])
             mcda_scores: list[dict] = state.get("mcda_scores", [])
 

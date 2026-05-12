@@ -11,14 +11,6 @@ from agents.material_node import material_ideator
 from agents.state import AgentState
 
 
-def check_interview_complete(state: AgentState):
-    """Routing basato su current_phase esplicito (T07/T08).
-    Torna sempre a 'human_feedback_processor' — il nodo usa current_phase
-    internamente per distinguere intervista da approvazione workflow.
-    """
-    return "human_feedback_processor"
-
-
 def route_after_feedback(state: AgentState):
     """Routing in uscita dal nodo unificato human_feedback_processor (T08).
     - 'workflow' → procedi alla material ideation (approvazione BOM+workflow)
@@ -56,13 +48,8 @@ def build_graph(mode: str = "interactive", checkpointer=None):
         },
     )
 
-    # Conditional edge: workflow ideator → sempre human_feedback_processor
-    # (il nodo distingue interview vs approvazione workflow via current_phase)
-    graph.add_conditional_edges(
-        "workflow_bom_ideator",
-        check_interview_complete,
-        {"human_feedback_processor": "human_feedback_processor"},
-    )
+    # Edge: workflow ideator → sempre human_feedback_processor
+    graph.add_edge("workflow_bom_ideator", "human_feedback_processor")
     graph.add_edge("material_ideator", "lca_validator")
     graph.add_edge("lca_validator", "mcda_scorer")
     graph.add_edge("mcda_scorer", END)

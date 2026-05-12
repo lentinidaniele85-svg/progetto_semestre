@@ -18,9 +18,14 @@ GEOMETRY_MAPPING = {
 }
 
 async def workflow_bom_ideator(state: AgentState) -> dict:
+    from agents.nodes import is_italian
+    ita = is_italian(state.get("user_input", ""))
     thought_log = list(state.get("thought_log", []))
     assumptions = list(state.get("assumptions_list", []))
-    thought_log.append("Executing Workflow & BOM Ideator (7 Steps)...")
+    if ita:
+        thought_log.append("Esecuzione Workflow & Ideatore BOM (7 Passi)...")
+    else:
+        thought_log.append("Executing Workflow & BOM Ideator (7 Steps)...")
 
     # T05: Step 2 — Lookup Aggregato
     llm = ModelFactory.get_model()
@@ -42,7 +47,7 @@ Specifically ensure that:
 - You extract logistics distance_km if explicitly provided (Step 6).
 - You declare any assumptions made in assumptions_made (Step 3, 6, 7).
 - You use the EXACT geometry mappings (Step 4).
-RESPOND EXCLUSIVELY IN ENGLISH.
+The JSON keys and structure must be in English, but user-facing text (interview_questions, justification, etc.) must be in the language of the Product Description.
 """
 
     chain = llm.with_structured_output(WorkflowAndBOMResponse)
@@ -53,10 +58,49 @@ RESPOND EXCLUSIVELY IN ENGLISH.
             _invoke_structured, chain, llm, WorkflowAndBOMResponse, messages
         )
 
-        if not result.is_interview_complete:
+        provider = get_lca_provider()
+        
+        raw_geography = result.geography or "Not specified"
+        GEO_MAPPING = {
+            "europa": "RER",
+            "europe": "RER",
+            "mondo": "GLO",
+            "globale": "GLO",
+            "world": "GLO",
+            "global": "GLO",
+            "stati uniti": "United States of America",
+            "usa": "United States of America",
+            "united states": "United States of America",
+            "cina": "China",
+            "china": "China"
+        }
+        geography = GEO_MAPPING.get(raw_geography.lower(), raw_geography)
+
+        is_interview_complete = result.is_interview_complete
+
+        if not is_interview_complete and result.components:
+            all_matched = True
+            for comp_data in result.components:
+                comp_dict = comp_data.model_dump() if hasattr(comp_data, "model_dump") else (comp_data.dict() if hasattr(comp_data, "dict") else comp_data)
+                mat = comp_dict.get("material", "unknown") if isinstance(comp_dict, dict) else "unknown"
+                match = provider.find_closest_match(mat, location=geography, threshold=0.8)
+                if not match:
+                    all_matched = False
+                    break
+            if all_matched:
+                if ita:
+                    thought_log.append("Trovate corrispondenze con >80% di similarità. Ignoro richiesta intervista.")
+                else:
+                    thought_log.append("Found matches with >80% similarity. Overriding interview request.")
+                is_interview_complete = True
+
+        if not is_interview_complete:
             # T05: step rimane a 2 (non avanzare) durante l'intervista
-            thought_log.append("Interrupt: missing data. Waiting for user response.")
-            missing_text = "I cannot proceed because the following information is missing:\n"
+            if ita:
+                thought_log.append("Interruzione: dati mancanti. In attesa di risposta utente.")
+            else:
+                thought_log.append("Interrupt: missing data. Waiting for user response.")
+            missing_text = "Mi mancano alcune informazioni per poter procedere con il modello:\n"
             for q in result.interview_questions:
                 missing_text += f"- {q}\n"
             return {
@@ -68,31 +112,39 @@ RESPOND EXCLUSIVELY IN ENGLISH.
             }
 
         # T05: Step 3 — Selezione Materiale (inferenza LLM completata)
-        thought_log.append("Step 3: Material selection completed.")
+        if ita:
+            thought_log.append("Passo 3: Selezione del materiale completata.")
+        else:
+            thought_log.append("Step 3: Material selection completed.")
 
         bom = []
-        provider = get_lca_provider()
 
         # T05: Step 4 — Vincolo Geometrico & Fuzzy Match materiali
-        thought_log.append("Step 4: Mapping geometry → manufacturing process.")
+        if ita:
+            thought_log.append("Passo 4: Mappatura geometria → processo manifatturiero.")
+        else:
+            thought_log.append("Step 4: Mapping geometry → manufacturing process.")
 
         for comp_data in result.components or []:
             comp = comp_data.model_dump()
             mat = comp.get("material", "unknown")
 
             # 1. Fuzzy Match del materiale nel DataSet.xlsx
-            best_match = provider.find_closest_match(mat)
-            if best_match:
-                comp["material_source"] = best_match["flowName"]
-                comp["unit_impact_value"] = best_match["environmental_impact"]
-            else:
-                comp["material_source"] = "Generic Profile (Fallback)"
-                comp["unit_impact_value"] = 3.5  # fallback
-                # T04: fallback reso visibile
-                assumptions.append(
-                    f"LCA data not found for '{mat}': "
-                    f"using fallback value 3.5 kg CO₂/kg (virgin PP impact)."
-                )
+            best_match = provider.find_closest_match(mat, location=geography)
+            if not best_match:
+                raise ValueError(f"Dato geografico non trovato per '{mat}' in '{geography}'")
+
+            loc_found = best_match.get("location", "")
+            if geography.lower() not in ["not specified", ""] and loc_found.lower() != geography.lower():
+                raise ValueError(f"Dato geografico non trovato: richiesto '{geography}', trovato '{loc_found}'")
+
+            idx = best_match.get("index", "?")
+            provider_name = best_match.get("providerName", "?")
+            val_co2 = best_match.get("environmental_impact", "?")
+            thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
+
+            comp["material_source"] = best_match["flowName"]
+            comp["unit_impact_value"] = best_match["environmental_impact"]
 
             # 2. Mapping Geometria → Processo
             geom = comp.get("geometry", "Pezzi Pieni Complessi")
@@ -106,16 +158,21 @@ RESPOND EXCLUSIVELY IN ENGLISH.
             bom.append(comp)
 
         # T05: Step 5 — Scomposizione BOM completata
-        thought_log.append(f"Step 5: BOM generated with {len(bom)} components.")
+        if ita:
+            thought_log.append(f"Passo 5: BOM generata con {len(bom)} componenti.")
+        else:
+            thought_log.append(f"Step 5: BOM generated with {len(bom)} components.")
 
         workflow = [w.model_dump() for w in (result.workflow_steps or [])]
 
         # T05: Step 6 — Calcolo Logistica
-        thought_log.append("Step 6: Logistics calculation (tkm).")
+        if ita:
+            thought_log.append("Passo 6: Calcolo logistica (tkm).")
+        else:
+            thought_log.append("Step 6: Logistics calculation (tkm).")
         mass = result.total_mass_kg or 1.0
 
         # T08: Distanza di default con assunzione esplicita se non specificata
-        geography = result.geography or "Not specified"
         if result.distance_km is not None:
             dist_km = result.distance_km
         else:
@@ -141,7 +198,7 @@ RESPOND EXCLUSIVELY IN ENGLISH.
             "bom": bom,
             "workflow_steps": workflow,
             "thought_log": thought_log,
-            "current_lca_step": 6,          # T05: Step 6 completato
+            "current_lca_step": 4,          # Step 4 (Workflow completed, ready for Material Ideation)
             "current_phase": "workflow",    # T07: routing esplicito
             "detected_geometry": result.components[0].geometry if result.components else "Unknown",
             "logistics_data": logistics,
@@ -150,7 +207,10 @@ RESPOND EXCLUSIVELY IN ENGLISH.
 
     except Exception as exc:
         logger.error(f"Workflow Ideation fallito: {exc}")
-        thought_log.append(f"⚠ Error during analysis ({exc}).")
+        if ita:
+            thought_log.append(f"⚠ Errore durante l'analisi ({exc}).")
+        else:
+            thought_log.append(f"⚠ Error during analysis ({exc}).")
 
         return {
             "pending_feedback": "An error occurred during analysis. Please try again.",

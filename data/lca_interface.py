@@ -20,5 +20,5 @@ class LCADataProvider(ABC):
         """
         Retrieve environmental impact scores for a material by its id.
 
-        Returns a dict with keys: co2_eq_kg, energy_mj, water_l, cost_tier.
+        Returns a dict with keys: environmental_impact, energy_mj, cost_tier.
         """

@@ -68,9 +68,20 @@ def _invoke_structured(chain, llm, schema, messages, *, retries: int = 1):
 # Nodo 1 — Constraint Extractor
 # ---------------------------------------------------------------------------
 
+def is_italian(text: str) -> bool:
+    if not text: return False
+    words = set(text.lower().replace(".", " ").replace(",", " ").split())
+    ita_words = {"di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "una", "e", "o", "ma", "che", "non", "si", "mi", "ti", "ci", "vi", "kg", "cina", "propilene", "plastica", "acciaio", "legno"}
+    return len(words.intersection(ita_words)) > 0
+
 def constraint_extractor(state: AgentState) -> dict:
     thought_log = list(state.get("thought_log", []))
-    thought_log.append("Extracting constraints from user input...")
+    ita = is_italian(state.get("user_input", ""))
+    
+    if ita:
+        thought_log.append("Estrazione dei vincoli dall'input dell'utente...")
+    else:
+        thought_log.append("Extracting constraints from user input...")
 
     llm = ModelFactory.get_model()
     chain = llm.with_structured_output(ConstraintsExtract)
@@ -102,8 +113,15 @@ def constraint_extractor(state: AgentState) -> dict:
 
     return {
         "constraints": constraints,
+        "workflow_steps": [],
+        "bom": [],
+        "semantic_alternatives": [],
+        "lca_results": [],
+        "mcda_scores": [],
+        "logistics_data": {},
+        "assumptions_list": [],
         "thought_log": thought_log,
-        "current_lca_step": 1,        # T05: Step 1 — Analisi Entità
+        "current_lca_step": 2,        # T05: Step 2 — Prossimo step: Data Collection
         "current_phase": "constraints", # T07: fase esplicita
     }
 
@@ -127,117 +145,129 @@ TRANSPORT_IMPACT_PER_TKM = 0.05
 # ---------------------------------------------------------------------------
 
 async def lca_validator(state: AgentState) -> dict:
-    thought_log = list(state.get("thought_log", []))
-    thought_log.append("Executing Deterministic LCA (Material + Process + Transport) × Mass...")
+    ita = is_italian(state.get("user_input", ""))
+    try:
+        thought_log = list(state.get("thought_log", []))
+        if ita:
+            thought_log.append("Esecuzione LCA Deterministica (Materiale + Processo + Trasporto) × Massa...")
+        else:
+            thought_log.append("Executing Deterministic LCA (Material + Process + Transport) × Mass...")
 
-    provider = get_lca_provider()
-    lca_results: list[dict] = []
-    assumptions = list(state.get("assumptions_list", []))
+        provider = get_lca_provider()
+        lca_results: list[dict] = []
+        assumptions = list(state.get("assumptions_list", []))
 
-    logistics = state.get("logistics_data", {})
-    tkm = logistics.get("tkm", 0.0)
+        logistics = state.get("logistics_data", {})
+        tkm = logistics.get("tkm", 0.0)
+        geography = logistics.get("geography", "GLO")
 
-    for component_alts in state.get("semantic_alternatives", []):
-        component_name: str = component_alts["component_name"]
+        for component_alts in state.get("semantic_alternatives", []):
+            component_name: str = component_alts["component_name"]
 
-        orig_comp = next(
-            (c for c in state.get("bom", []) if c["name"] == component_name),
-            None
-        )
-        if not orig_comp:
-            continue
+            orig_comp = next(
+                (c for c in state.get("bom", []) if c["name"] == component_name),
+                None
+            )
+            if not orig_comp:
+                continue
 
-        original_material = orig_comp["material"]
-        mass_kg = orig_comp.get("weight_kg", 1.0)
-        process_name = orig_comp.get("manufacturing_process", "Injection moulding")
-        process_impact = PROCESS_IMPACTS.get(process_name, 1.0)
+            original_material = orig_comp["material"]
+            mass_kg = orig_comp.get("weight_kg", 1.0)
+            process_name = orig_comp.get("manufacturing_process", "Injection moulding")
+            process_impact = PROCESS_IMPACTS.get(process_name, 1.0)
 
-        # Impatto materiale originale
-        orig_match = provider.find_closest_match(original_material)
-        if orig_match:
+            # Impatto materiale originale
+            orig_match = provider.find_closest_match(original_material, location=geography)
+            if not orig_match:
+                raise ValueError(f"Dato geografico non trovato per '{original_material}' in '{geography}'")
+                
+            loc_found = orig_match.get("location", "")
+            if geography.lower() not in ["not specified", ""] and loc_found.lower() != geography.lower():
+                raise ValueError(f"Dato geografico non trovato: richiesto '{geography}', trovato '{loc_found}'")
+                
+            idx = orig_match.get("index", "?")
+            provider_name = orig_match.get("providerName", "?")
+            val_co2 = orig_match.get("environmental_impact", "?")
+            thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
+
             mat_impact = orig_match["environmental_impact"]
             is_market = orig_match.get("is_market", False)  # T02: campo corretto
-            mat_energy = orig_match.get("energy_mj", 50.0)
-            mat_cost = orig_match.get("cost_per_kg", 1.0)
-        else:
-            mat_impact = 3.5  # fallback
-            is_market = False
-            mat_energy = 50.0
-            mat_cost = 1.0
-            # T04: fallback visibile all'utente
-            assumptions.append(
-                f"LCA data not found for '{original_material}': "
-                f"using fallback value 3.5 kg CO₂/kg (virgin PP impact)."
-            )
+            mat_energy = orig_match.get("energy_mj") or orig_comp.get("estimated_energy_mj", 50.0)
+            mat_cost = orig_match.get("cost_per_kg") or orig_comp.get("estimated_cost_per_kg", 1.0)
 
-        transport_impact = 0.0 if is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
-        total_orig_impact = (mat_impact + process_impact + transport_impact) * mass_kg
+            transport_impact = 0.0 if is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
+            total_orig_impact = (mat_impact + process_impact + transport_impact) * mass_kg
 
-        orig_scores = {
-            "environmental_impact": total_orig_impact,
-            "unit_material_impact": mat_impact,
-            "energy_mj": mat_energy * mass_kg,
-            "water_l": 1.0 * mass_kg,
-            "cost_tier": 1,
-            "cost_per_kg": mat_cost,
-            "lifespan_years": 10.0,
-        }
-
-        alt_results: list[dict] = []
-        for alt in component_alts.get("alternatives", []):
-            alt_match = provider.find_closest_match(alt["name"])
-            if alt_match:
-                alt_mat_impact = alt_match["environmental_impact"]
-                alt_is_market = alt_match.get("is_market", False)  # T02: campo corretto
-                alt_energy = alt_match.get("energy_mj", 50.0)
-                alt_cost = alt_match.get("cost_per_kg", 1.0)
-            else:
-                alt_mat_impact = 3.5
-                alt_is_market = False
-                alt_energy = 50.0
-                alt_cost = 1.0
-                # T04: fallback visibile
-                assumptions.append(
-                    f"LCA data not found for alternative '{alt['name']}': "
-                    f"using fallback value 3.5 kg CO₂/kg."
-                )
-
-            alt_transport = 0.0 if alt_is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
-            total_alt_impact = (alt_mat_impact + process_impact + alt_transport) * mass_kg
-
-            scores = {
-                "environmental_impact": total_alt_impact,
-                "unit_material_impact": alt_mat_impact,
-                "energy_mj": alt_energy * mass_kg,
-                "water_l": 1.0 * mass_kg,
-                "cost_tier": 1,
-                "cost_per_kg": alt_cost,
+            orig_scores = {
+                "environmental_impact": total_orig_impact,
+                "unit_material_impact": mat_impact,
+                "energy_mj": mat_energy * mass_kg,
+                "cost_tier": 1 if mat_cost < 1.0 else (2 if mat_cost < 3.0 else (3 if mat_cost < 10.0 else 4)),
+                "cost_per_kg": mat_cost,
                 "lifespan_years": 10.0,
             }
 
-            alt_results.append({
-                "name": alt["name"],
-                "justification": alt["justification"],
-                "aesthetic_match": alt["aesthetic_match"],
-                "structural_match": alt["structural_match"],
-                "estimated_cost_change": alt.get("estimated_cost_change"),
-                "scores": scores,
+            alt_results: list[dict] = []
+            for alt in component_alts.get("alternatives", []):
+                alt_match = provider.find_closest_match(alt["name"], location=geography)
+                if not alt_match:
+                    raise ValueError(f"Dato geografico non trovato per l'alternativa '{alt['name']}' in '{geography}'")
+                
+                loc_found_alt = alt_match.get("location", "")
+                if geography.lower() not in ["not specified", ""] and loc_found_alt.lower() != geography.lower():
+                    raise ValueError(f"Dato geografico non trovato: richiesto '{geography}', trovato '{loc_found_alt}'")
+                    
+                idx_alt = alt_match.get("index", "?")
+                provider_name_alt = alt_match.get("providerName", "?")
+                val_co2_alt = alt_match.get("environmental_impact", "?")
+                thought_log.append(f"Riga Excel trovata: {idx_alt} - {provider_name_alt} - {loc_found_alt} - {val_co2_alt}")
+
+                alt_mat_impact = alt_match["environmental_impact"]
+                alt_is_market = alt_match.get("is_market", False)  # T02: campo corretto
+                alt_energy = alt_match.get("energy_mj") or alt.get("estimated_energy_mj", 50.0)
+                alt_cost = alt_match.get("cost_per_kg") or alt.get("estimated_cost_per_kg", 1.0)
+
+                alt_transport = 0.0 if alt_is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
+                total_alt_impact = (alt_mat_impact + process_impact + alt_transport) * mass_kg
+
+                scores = {
+                    "environmental_impact": total_alt_impact,
+                    "unit_material_impact": alt_mat_impact,
+                    "energy_mj": alt_energy * mass_kg,
+                    "cost_tier": 1 if alt_cost < 1.0 else (2 if alt_cost < 3.0 else (3 if alt_cost < 10.0 else 4)),
+                    "cost_per_kg": alt_cost,
+                    "lifespan_years": 10.0,
+                }
+
+                alt_results.append({
+                    "name": alt["name"],
+                    "justification": alt["justification"],
+                    "aesthetic_match": alt["aesthetic_match"],
+                    "structural_match": alt["structural_match"],
+                    "estimated_cost_change": alt.get("estimated_cost_change"),
+                    "scores": scores,
+                })
+
+            lca_results.append({
+                "component_name": component_name,
+                "original_material": original_material,
+                "original_scores": orig_scores,
+                "alternatives": alt_results,
             })
 
-        lca_results.append({
-            "component_name": component_name,
-            "original_material": original_material,
-            "original_scores": orig_scores,
-            "alternatives": alt_results,
-        })
-
-    return {
-        "lca_results": lca_results,
-        "thought_log": thought_log,
-        "assumptions_list": assumptions,
-        "current_lca_step": 7,          # T05: Step 7 — Validazione
-        "current_phase": "lca",         # T07: fase esplicita
-    }
+        return {
+            "lca_results": lca_results,
+            "thought_log": thought_log,
+            "assumptions_list": assumptions,
+            "current_lca_step": 6,          # Step 6
+            "current_phase": "lca",         # T07: fase esplicita
+        }
+    except Exception as exc:
+        logger.error(f"LCA Validator failed: {exc}")
+        return {
+            "current_phase": "error",
+            "error_message": f"Errore calcolo LCA: {exc}"
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -251,14 +281,17 @@ def _safe_delta(orig: float, alt: float) -> float:
 
 
 def mcda_scorer(state: AgentState) -> dict:
+    ita = is_italian(state.get("user_input", ""))
     thought_log = list(state.get("thought_log", []))
-    thought_log.append("Calculating MCDA score and selecting optimal materials...")
+    if ita:
+        thought_log.append("Calcolo dei punteggi MCDA e selezione dei materiali ottimali...")
+    else:
+        thought_log.append("Calculating MCDA score and selecting optimal materials...")
 
     from core.config import settings
     w_co2 = settings.weight_co2
     w_cost = settings.weight_cost
     w_energy = settings.weight_energy
-    w_water = settings.weight_water
 
     mcda_scores: list[dict] = []
 
@@ -267,7 +300,6 @@ def mcda_scorer(state: AgentState) -> dict:
         orig_co2: float = orig.get("environmental_impact", 0.0)
         orig_cost: float = orig.get("cost_per_kg", orig.get("cost_tier", 0.0))
         orig_energy: float = orig.get("energy_mj", 0.0)
-        orig_water: float = orig.get("water_l", 0.0)
         orig_cost_tier: int = orig.get("cost_tier", 0)
 
         scored: list[dict] = []
@@ -276,19 +308,16 @@ def mcda_scorer(state: AgentState) -> dict:
             alt_co2: float = s.get("environmental_impact", 0.0)
             alt_cost: float = s.get("cost_per_kg", s.get("cost_tier", 0.0))
             alt_energy: float = s.get("energy_mj", 0.0)
-            alt_water: float = s.get("water_l", 0.0)
             alt_cost_tier: int = s.get("cost_tier", 0)
 
             delta_co2 = _safe_delta(orig_co2, alt_co2)
             delta_cost = _safe_delta(orig_cost, alt_cost)
             delta_energy = _safe_delta(orig_energy, alt_energy)
-            delta_water = _safe_delta(orig_water, alt_water)
 
             mcda_score = (
                 delta_co2 * w_co2
                 + delta_cost * w_cost
                 + delta_energy * w_energy
-                + delta_water * w_water
             )
 
             scored.append({
@@ -316,6 +345,7 @@ def mcda_scorer(state: AgentState) -> dict:
     return {
         "mcda_scores": mcda_scores,
         "thought_log": thought_log,
+        "current_lca_step": 7,
         "current_phase": "complete",  # T07: fase esplicita
     }
 
@@ -338,95 +368,97 @@ _APPROVE_TOKENS = frozenset({
 
 
 async def human_feedback_processor(state: AgentState) -> dict:
-    """
-    Nodo unificato di feedback umano (T08).
-    Usa current_phase per determinare il contesto:
-      - 'interview'   → accumula risposta nel user_input e torna al workflow ideator
-      - 'constraints' → gestisce approvazione/modifica vincoli
-      - 'workflow'    → gestisce approvazione/modifica BOM+workflow
-    """
-    thought_log = list(state.get("thought_log", []))
-    feedback = (state.get("pending_feedback") or "").strip()
-    current_phase = state.get("current_phase", "constraints")
-
-    if not feedback:
-        thought_log.append("No pending feedback — continuation approved.")
-        return {"pending_feedback": None, "thought_log": thought_log}
-
-    lower = feedback.lower()
-
-    # Fase di intervista: qualsiasi risposta è una risposta alle domande mancanti
-    if current_phase == "interview":
-        new_user_input = state.get("user_input", "") + f"\n\n[User Interview Response]: {feedback}"
-        thought_log.append("Interview response added to user input.")
-        return {
-            "user_input": new_user_input,
-            "pending_feedback": None,
-            "thought_log": thought_log
-        }
-
-    # Fase di revisione (constraints o workflow): controlla approvazione
-    if lower in _APPROVE_TOKENS or any(lower.startswith(t + " ") for t in _APPROVE_TOKENS):
-        thought_log.append("User approved — proceeding without modifications.")
-        return {"pending_feedback": None, "thought_log": thought_log}
-
-    thought_log.append(f"Applying user feedback: \"{feedback}\"")
-
-    llm = ModelFactory.get_model()
-
-    system_msg = (
-        "You are a product design assistant. The user provided natural language feedback "
-        "to modify the Bill of Materials or design constraints.\n\n"
-        "Return ONLY valid JSON — no markdown, no explanations — with this structure:\n"
-        "{\n"
-        "  \"bom_modifications\": [\n"
-        "    {\"component_name\": \"<name>\", "
-        "\"field\": \"material|weight_kg|functional_role\", \"new_value\": \"<value>\"}\n"
-        "  ],\n"
-        "  \"constraint_modifications\": {\"<key>\": \"<value>\"},\n"
-        "  \"thought\": \"Brief explanation of what changed\"\n"
-        "}\n"
-        "Use empty arrays/objects when there are no modifications for that category. RESPOND EXCLUSIVELY IN ENGLISH."
-    )
-
-    user_msg = (
-        f"Current BOM:\n{json.dumps(state.get('bom', []), indent=2)}\n\n"
-        f"Current Constraints:\n{json.dumps(state.get('constraints', {}), indent=2)}\n\n"
-        f"User Feedback: \"{feedback}\""
-    )
-
     try:
-        response = await llm.ainvoke(
-            [SystemMessage(content=system_msg), HumanMessage(content=user_msg)]
+        thought_log = list(state.get("thought_log", []))
+        feedback = (state.get("pending_feedback") or "").strip()
+        current_phase = state.get("current_phase", "constraints")
+
+        if not feedback:
+            thought_log.append("No pending feedback — continuation approved.")
+            return {"pending_feedback": None, "thought_log": thought_log, "current_phase": current_phase}
+
+        lower = feedback.lower()
+
+        # Fase di intervista: qualsiasi risposta è una risposta alle domande mancanti
+        if current_phase == "interview":
+            new_user_input = state.get("user_input", "") + f"\n\n[User Interview Response]: {feedback}"
+            thought_log.append("Interview response added to user input.")
+            return {
+                "user_input": new_user_input,
+                "pending_feedback": None,
+                "thought_log": thought_log,
+                "current_phase": current_phase
+            }
+
+        # Fase di revisione (constraints o workflow): controlla approvazione
+        if lower in _APPROVE_TOKENS or any(lower.startswith(t + " ") for t in _APPROVE_TOKENS):
+            thought_log.append("User approved — proceeding without modifications.")
+            return {"pending_feedback": None, "thought_log": thought_log, "current_phase": current_phase}
+
+        thought_log.append(f"Applying user feedback: \"{feedback}\"")
+
+        llm = ModelFactory.get_model()
+
+        system_msg = (
+            "You are a product design assistant. The user provided natural language feedback "
+            "to modify the Bill of Materials or design constraints.\n\n"
+            "Return ONLY valid JSON — no markdown, no explanations — with this structure:\n"
+            "{\n"
+            "  \"bom_modifications\": [\n"
+            "    {\"component_name\": \"<name>\", "
+            "\"field\": \"material|weight_kg|functional_role\", \"new_value\": \"<value>\"}\n"
+            "  ],\n"
+            "  \"constraint_modifications\": {\"<key>\": \"<value>\"},\n"
+            "  \"thought\": \"Brief explanation of what changed\"\n"
+            "}\n"
+            "Use empty arrays/objects when there are no modifications for that category. RESPOND EXCLUSIVELY IN ENGLISH."
         )
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.rsplit("```", 1)[0]
 
-        patches = json.loads(raw)
+        user_msg = (
+            f"Current BOM:\n{json.dumps(state.get('bom', []), indent=2)}\n\n"
+            f"Current Constraints:\n{json.dumps(state.get('constraints', {}), indent=2)}\n\n"
+            f"User Feedback: \"{feedback}\""
+        )
 
-        bom = [dict(c) for c in state.get("bom", [])]
-        for mod in patches.get("bom_modifications", []):
-            for comp in bom:
-                if comp.get("name", "").lower() == mod.get("component_name", "").lower():
-                    comp[mod["field"]] = mod["new_value"]
+        try:
+            response = await llm.ainvoke(
+                [SystemMessage(content=system_msg), HumanMessage(content=user_msg)]
+            )
+            raw = response.content.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.rsplit("```", 1)[0]
 
-        constraints = dict(state.get("constraints", {}))
-        constraints.update(patches.get("constraint_modifications", {}))
+            patches = json.loads(raw)
 
-        thought = patches.get("thought", "User modifications applied")
-        thought_log.append(f"Feedback applied: {thought}")
+            bom = [dict(c) for c in state.get("bom", [])]
+            for mod in patches.get("bom_modifications", []):
+                for comp in bom:
+                    if comp.get("name", "").lower() == mod.get("component_name", "").lower():
+                        comp[mod["field"]] = mod["new_value"]
 
-        return {
-            "bom": bom,
-            "constraints": constraints,
-            "pending_feedback": None,
-            "thought_log": thought_log,
-        }
+            constraints = dict(state.get("constraints", {}))
+            constraints.update(patches.get("constraint_modifications", {}))
 
+            thought = patches.get("thought", "User modifications applied")
+            thought_log.append(f"Feedback applied: {thought}")
+
+            return {
+                "bom": bom,
+                "constraints": constraints,
+                "pending_feedback": None,
+                "thought_log": thought_log,
+                "current_phase": current_phase
+            }
+
+        except Exception as exc:
+            thought_log.append(f"Failed to parse feedback (proceeding unchanged): {exc}")
+            return {"pending_feedback": None, "thought_log": thought_log, "current_phase": current_phase}
     except Exception as exc:
-        thought_log.append(f"Failed to parse feedback (proceeding unchanged): {exc}")
-        return {"pending_feedback": None, "thought_log": thought_log}
+        logger.error(f"Human feedback processor failed: {exc}")
+        return {
+            "current_phase": "error",
+            "error_message": f"Errore nel feedback loop: {exc}"
+        }

@@ -22,7 +22,7 @@ async def material_ideator(state: AgentState) -> dict:
         constraints=json.dumps(constraints),
     )
     
-    user_prompt = f"""
+user_prompt = f"""
 Product Description: {state.get("user_input", "")}
 Constraints: {json.dumps(constraints)}
 Approved BOM: {json.dumps(bom)}
@@ -30,6 +30,10 @@ Approved BOM: {json.dumps(bom)}
 Please execute ONLY FASE 3 and FASE 4 exactly as described in your system prompt.
 Generate 3 sustainable alternatives for EACH component in the BOM (Eco-Max, Balanced, Drop-in).
 Exclude any material not compatible with the user constraints.
+
+CRITICAL RULE FOR MATERIAL CATEGORY CONSISTENCY:
+You MUST respect the original Material Category. If the original material is a "Plastic/Polymer" (e.g. Polypropylene, PE, PET), the alternatives MUST be searched among bioplastics (e.g. PLA, PHA) or recycled plastics (e.g. rPP, rPET). 
+It is STRICTLY FORBIDDEN to suggest "Cardboard", "Paper/Board", or wood to replace a plastic polymer, unless explicitly requested by the user.
 """
 
     chain = llm.with_structured_output(MaterialIdeationResponse)
@@ -45,7 +49,7 @@ Exclude any material not compatible with the user constraints.
         return {
             "semantic_alternatives": semantic_alternatives,
             "thought_log": thought_log,
-            "current_lca_step": 4,  # Step 4 — Selezione Materiale completata
+            "current_lca_step": 5,  # Step 5 (Material ideation completed, ready for LCA)
         }
 
     except Exception as exc:
@@ -55,5 +59,7 @@ Exclude any material not compatible with the user constraints.
         # User requested explicitly NOT to fallback to generic errors
         return {
             "pending_feedback": "Non posso procedere perché si è verificato un timeout o errore di connessione col modello durante la scelta dei materiali. Vuoi riprovare?",
-            "thought_log": thought_log
+            "thought_log": thought_log,
+            "current_phase": "error",
+            "error_message": str(exc)
         }

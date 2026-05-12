@@ -151,9 +151,7 @@ def test_find_closest_match_no_match_returns_none(client: CSVLcaClient) -> None:
 def _assert_valid_scores(scores: dict) -> None:
     assert "environmental_impact" in scores
     assert "energy_mj" in scores
-    assert "water_l" in scores
     assert "cost_tier" in scores
     assert scores["environmental_impact"] > 0
     assert scores["energy_mj"] >= 0
-    assert scores["water_l"] >= 0
     assert 0 <= scores["cost_tier"] <= 4
