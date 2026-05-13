@@ -40,14 +40,26 @@ async def workflow_bom_ideator(state: AgentState) -> dict:
 Product Description: {state.get("user_input", "")}
 Constraints: {json.dumps(constraints)}
 
-Execute the 7 Steps defined in your System Prompt and provide the BOM Generation output.
-Specifically ensure that:
+Execute the 7 Steps defined in your System Prompt and provide a COMPLETE BOM Generation output.
+
+ASSUMPTION-FIRST RULES (mandatory):
+- ALWAYS set is_interview_complete=True and interview_questions=[] UNLESS the description
+  is completely unintelligible (e.g. a single word with no context at all).
+- If mass is missing → infer it from the product category (chair=4.5kg, 500mL bottle=0.025kg,
+  generic part=1.0kg) and record the assumption.
+- If material is missing → choose the most plausible one by technical exclusion (Step 3)
+  and record the assumption.
+- If geography is missing → default to RER (Europe) or GLO and record the assumption.
+- NEVER leave fields at zero or undefined when an assumption can fill them.
+
+ALWAYS ensure:
 - You determine if it's a material or object (Step 1).
-- You provide missing data as interview_questions if needed (Step 7).
-- You extract logistics distance_km if explicitly provided (Step 6).
-- You declare any assumptions made in assumptions_made (Step 3, 6, 7).
-- You use the EXACT geometry mappings (Step 4).
-The JSON keys and structure must be in English, but user-facing text (interview_questions, justification, etc.) must be in the language of the Product Description.
+- You extract logistics distance_km ONLY if explicitly stated by the user (Step 6).
+- Every assumption is listed in assumptions_made with a clear explanation.
+- You use the EXACT geometry labels from Step 4 (Corpi Cavi, Pezzi Pieni Complessi,
+  Film, Profili/Tubi).
+- JSON keys remain in English; user-facing text (assumptions_made, justification) must
+  be in the same language as the Product Description.
 """
 
     chain = llm.with_structured_output(WorkflowAndBOMResponse)
@@ -131,20 +143,43 @@ The JSON keys and structure must be in English, but user-facing text (interview_
 
             # 1. Fuzzy Match del materiale nel DataSet.xlsx
             best_match = provider.find_closest_match(mat, location=geography)
+
             if not best_match:
-                raise ValueError(f"Dato geografico non trovato per '{mat}' in '{geography}'")
+                # ── FALLBACK CAUTELATIVO ──────────────────────────────────────
+                # Materiale non trovato nel database: usiamo 3.5 kg CO₂/kg come
+                # valore conservativo e lo documentiamo nelle assunzioni.
+                CO2_FALLBACK = 3.5
+                fallback_warning = (
+                    f"ATTENZIONE: Materiale '{mat}' non trovato nel database, "
+                    f"usato valore cautelativo di fallback di {CO2_FALLBACK} kg CO\u2082/kg."
+                )
+                assumptions.append(fallback_warning)
+                logger.warning(fallback_warning)
+                thought_log.append(f"⚠ Fallback CO₂ applicato per '{mat}': {CO2_FALLBACK} kg CO₂/kg")
 
-            loc_found = best_match.get("location", "")
-            if geography.lower() not in ["not specified", ""] and loc_found.lower() != geography.lower():
-                raise ValueError(f"Dato geografico non trovato: richiesto '{geography}', trovato '{loc_found}'")
+                comp["material_source"] = f"{mat} (fallback — non trovato nel database)"
+                comp["unit_impact_value"] = CO2_FALLBACK
+            else:
+                loc_found = best_match.get("location", "")
+                if (
+                    geography.lower() not in ["not specified", ""]
+                    and loc_found.lower() != geography.lower()
+                ):
+                    # Geographic fallback usato dal provider — solo warning, non crash
+                    geo_note = (
+                        f"Nota: per '{mat}' richiesta geografia '{geography}', "
+                        f"usato proxy geografico '{loc_found}' dal database."
+                    )
+                    assumptions.append(geo_note)
+                    logger.info(geo_note)
 
-            idx = best_match.get("index", "?")
-            provider_name = best_match.get("providerName", "?")
-            val_co2 = best_match.get("environmental_impact", "?")
-            thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
+                idx = best_match.get("index", "?")
+                provider_name = best_match.get("providerName", "?")
+                val_co2 = best_match.get("environmental_impact", "?")
+                thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
 
-            comp["material_source"] = best_match["flowName"]
-            comp["unit_impact_value"] = best_match["environmental_impact"]
+                comp["material_source"] = best_match["flowName"]
+                comp["unit_impact_value"] = best_match["environmental_impact"]
 
             # 2. Mapping Geometria → Processo
             geom = comp.get("geometry", "Pezzi Pieni Complessi")

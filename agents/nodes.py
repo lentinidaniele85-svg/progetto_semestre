@@ -5,6 +5,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.schemas import ConstraintsExtract
 from agents.state import AgentState
+from core.config import (
+    CO2_FALLBACK_VALUE,
+    PROCESS_IMPACTS,
+    TRANSPORT_IMPACT_PER_TKM,
+    settings,
+)
 from core.llm_factory import ModelFactory
 from data.provider_factory import get_lca_provider
 
@@ -126,17 +132,8 @@ def constraint_extractor(state: AgentState) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Impatti processo manifatturiero e trasporto (usati da lca_validator)
-# ---------------------------------------------------------------------------
-
-PROCESS_IMPACTS = {
-    "Blow moulding": 0.8,
-    "Injection moulding": 1.2,
-    "Extrusion (film)": 0.5,
-    "Extrusion": 0.6
-}
-TRANSPORT_IMPACT_PER_TKM = 0.05
+# PROCESS_IMPACTS, TRANSPORT_IMPACT_PER_TKM e CO2_FALLBACK_VALUE
+# sono ora definiti in core/config.py e importati a inizio file.
 
 
 # ---------------------------------------------------------------------------
@@ -178,22 +175,44 @@ async def lca_validator(state: AgentState) -> dict:
 
             # Impatto materiale originale
             orig_match = provider.find_closest_match(original_material, location=geography)
-            if not orig_match:
-                raise ValueError(f"Dato geografico non trovato per '{original_material}' in '{geography}'")
-                
-            loc_found = orig_match.get("location", "")
-            if geography.lower() not in ["not specified", ""] and loc_found.lower() != geography.lower():
-                raise ValueError(f"Dato geografico non trovato: richiesto '{geography}', trovato '{loc_found}'")
-                
-            idx = orig_match.get("index", "?")
-            provider_name = orig_match.get("providerName", "?")
-            val_co2 = orig_match.get("environmental_impact", "?")
-            thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
 
-            mat_impact = orig_match["environmental_impact"]
-            is_market = orig_match.get("is_market", False)  # T02: campo corretto
-            mat_energy = orig_match.get("energy_mj") or orig_comp.get("estimated_energy_mj", 50.0)
-            mat_cost = orig_match.get("cost_per_kg") or orig_comp.get("estimated_cost_per_kg", 1.0)
+            if not orig_match:
+                # ── FALLBACK CAUTELATIVO ──────────────────────────────────
+                _warn = (
+                    f"ATTENZIONE: Materiale '{original_material}' non trovato nel database, "
+                    f"usato valore cautelativo di fallback di {CO2_FALLBACK_VALUE} kg CO\u2082/kg."
+                )
+                assumptions.append(_warn)
+                logger.warning(_warn)
+                thought_log.append(f"\u26a0 Fallback CO\u2082 applicato per '{original_material}': {CO2_FALLBACK_VALUE} kg CO\u2082/kg")
+                mat_impact = CO2_FALLBACK_VALUE
+                is_market = False
+                mat_energy = orig_comp.get("estimated_energy_mj", 50.0)
+                mat_cost = orig_comp.get("estimated_cost_per_kg", 1.0)
+            else:
+                loc_found = orig_match.get("location", "")
+                if (
+                    geography.lower() not in ["not specified", ""]
+                    and loc_found.lower() != geography.lower()
+                ):
+                    # Proxy geografico usato — solo warning, non crash
+                    _geo_note = (
+                        f"Nota: per '{original_material}' richiesta geografia '{geography}', "
+                        f"usato proxy geografico '{loc_found}' dal database."
+                    )
+                    assumptions.append(_geo_note)
+                    logger.info(_geo_note)
+
+                idx = orig_match.get("index", "?")
+                provider_name = orig_match.get("providerName", "?")
+                loc_found = orig_match.get("location", "?")
+                val_co2 = orig_match.get("environmental_impact", "?")
+                thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
+
+                mat_impact = orig_match["environmental_impact"]
+                is_market = orig_match.get("is_market", False)  # T02: campo corretto
+                mat_energy = orig_match.get("energy_mj") or orig_comp.get("estimated_energy_mj", 50.0)
+                mat_cost = orig_match.get("cost_per_kg") or orig_comp.get("estimated_cost_per_kg", 1.0)
 
             transport_impact = 0.0 if is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
             total_orig_impact = (mat_impact + process_impact + transport_impact) * mass_kg
@@ -209,23 +228,46 @@ async def lca_validator(state: AgentState) -> dict:
 
             alt_results: list[dict] = []
             for alt in component_alts.get("alternatives", []):
-                alt_match = provider.find_closest_match(alt["name"], location=geography)
-                if not alt_match:
-                    raise ValueError(f"Dato geografico non trovato per l'alternativa '{alt['name']}' in '{geography}'")
-                
-                loc_found_alt = alt_match.get("location", "")
-                if geography.lower() not in ["not specified", ""] and loc_found_alt.lower() != geography.lower():
-                    raise ValueError(f"Dato geografico non trovato: richiesto '{geography}', trovato '{loc_found_alt}'")
-                    
-                idx_alt = alt_match.get("index", "?")
-                provider_name_alt = alt_match.get("providerName", "?")
-                val_co2_alt = alt_match.get("environmental_impact", "?")
-                thought_log.append(f"Riga Excel trovata: {idx_alt} - {provider_name_alt} - {loc_found_alt} - {val_co2_alt}")
+                alt_name = alt["name"]
+                alt_match = provider.find_closest_match(alt_name, location=geography)
 
-                alt_mat_impact = alt_match["environmental_impact"]
-                alt_is_market = alt_match.get("is_market", False)  # T02: campo corretto
-                alt_energy = alt_match.get("energy_mj") or alt.get("estimated_energy_mj", 50.0)
-                alt_cost = alt_match.get("cost_per_kg") or alt.get("estimated_cost_per_kg", 1.0)
+                if not alt_match:
+                    # ── FALLBACK CAUTELATIVO ──────────────────────────────────
+                    _warn_alt = (
+                        f"ATTENZIONE: Materiale '{alt_name}' non trovato nel database, "
+                        f"usato valore cautelativo di fallback di {CO2_FALLBACK_VALUE} kg CO\u2082/kg."
+                    )
+                    assumptions.append(_warn_alt)
+                    logger.warning(_warn_alt)
+                    thought_log.append(f"\u26a0 Fallback CO\u2082 applicato per alternativa '{alt_name}': {CO2_FALLBACK_VALUE} kg CO\u2082/kg")
+                    alt_mat_impact = CO2_FALLBACK_VALUE
+                    alt_is_market = False
+                    alt_energy = alt.get("estimated_energy_mj", 50.0)
+                    alt_cost = alt.get("estimated_cost_per_kg", 1.0)
+                else:
+                    loc_found_alt = alt_match.get("location", "")
+                    if (
+                        geography.lower() not in ["not specified", ""]
+                        and loc_found_alt.lower() != geography.lower()
+                    ):
+                        # Proxy geografico usato — solo warning, non crash
+                        _geo_note_alt = (
+                            f"Nota: per alternativa '{alt_name}' richiesta geografia '{geography}', "
+                            f"usato proxy geografico '{loc_found_alt}' dal database."
+                        )
+                        assumptions.append(_geo_note_alt)
+                        logger.info(_geo_note_alt)
+
+                    idx_alt = alt_match.get("index", "?")
+                    provider_name_alt = alt_match.get("providerName", "?")
+                    loc_found_alt = alt_match.get("location", "?")
+                    val_co2_alt = alt_match.get("environmental_impact", "?")
+                    thought_log.append(f"Riga Excel trovata: {idx_alt} - {provider_name_alt} - {loc_found_alt} - {val_co2_alt}")
+
+                    alt_mat_impact = alt_match["environmental_impact"]
+                    alt_is_market = alt_match.get("is_market", False)  # T02: campo corretto
+                    alt_energy = alt_match.get("energy_mj") or alt.get("estimated_energy_mj", 50.0)
+                    alt_cost = alt_match.get("cost_per_kg") or alt.get("estimated_cost_per_kg", 1.0)
 
                 alt_transport = 0.0 if alt_is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
                 total_alt_impact = (alt_mat_impact + process_impact + alt_transport) * mass_kg
@@ -288,7 +330,6 @@ def mcda_scorer(state: AgentState) -> dict:
     else:
         thought_log.append("Calculating MCDA score and selecting optimal materials...")
 
-    from core.config import settings
     w_co2 = settings.weight_co2
     w_cost = settings.weight_cost
     w_energy = settings.weight_energy

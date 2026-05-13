@@ -11,18 +11,42 @@ from agents.material_node import material_ideator
 from agents.state import AgentState
 
 
-def route_after_feedback(state: AgentState):
+def route_after_feedback(state: AgentState) -> str:
     """Routing in uscita dal nodo unificato human_feedback_processor (T08).
-    - 'workflow' → procedi alla material ideation (approvazione BOM+workflow)
-    - 'constraints' / 'interview' → torna al workflow ideator
+
+    Logica basata su current_phase:
+    - 'error'    → END  (blocca il grafo e mostra l'errore in UI)
+    - 'workflow' → material_ideator  (approvazione BOM+workflow completata)
+    - qualsiasi altro (constraints / interview) → workflow_bom_ideator
     """
-    if state.get("current_phase") == "workflow":
+    phase = state.get("current_phase", "init")
+    if phase == "error":
+        return END
+    if phase == "workflow":
         return "material_ideator"
     return "workflow_bom_ideator"
+
+
+def route_after_material(state: AgentState) -> str:
+    """Routing in uscita da material_ideator.
+
+    - 'error' → END  (errore tecnico durante ideazione materiali)
+    - qualsiasi altro → lca_validator
+    """
+    phase = state.get("current_phase", "material")
+    if phase == "error":
+        return END
+    return "lca_validator"
 
 def build_graph(mode: str = "interactive", checkpointer=None):
     """
     Build and compile the Co-Pilot optimization graph.
+
+    Routing esplicito basato su current_phase (T07):
+    - "error"    -> END (da qualsiasi nodo, blocca con messaggio di errore)
+    - "interview" / "constraints" -> torna a workflow_bom_ideator
+    - "workflow" -> material_ideator
+    - "material" -> lca_validator
     """
     graph = StateGraph(AgentState)
 
@@ -37,20 +61,34 @@ def build_graph(mode: str = "interactive", checkpointer=None):
     graph.add_edge("constraint_extractor", "human_feedback_processor")  # checkpoint: constraints
 
     # Routing in uscita dal nodo unificato:
-    #   phase='workflow'    → material_ideator
-    #   phase='constraints' o 'interview' → workflow_bom_ideator
+    #   phase='error'       -> END (blocca il grafo)
+    #   phase='workflow'    -> material_ideator
+    #   phase='constraints' / 'interview' -> workflow_bom_ideator
     graph.add_conditional_edges(
         "human_feedback_processor",
         route_after_feedback,
         {
+            END: END,
             "workflow_bom_ideator": "workflow_bom_ideator",
             "material_ideator": "material_ideator",
         },
     )
 
-    # Edge: workflow ideator → sempre human_feedback_processor
+    # Edge: workflow ideator -> sempre human_feedback_processor
     graph.add_edge("workflow_bom_ideator", "human_feedback_processor")
-    graph.add_edge("material_ideator", "lca_validator")
+
+    # Routing in uscita da material_ideator:
+    #   phase='error'   -> END (errore tecnico)
+    #   qualsiasi altro -> lca_validator
+    graph.add_conditional_edges(
+        "material_ideator",
+        route_after_material,
+        {
+            END: END,
+            "lca_validator": "lca_validator",
+        },
+    )
+
     graph.add_edge("lca_validator", "mcda_scorer")
     graph.add_edge("mcda_scorer", END)
 

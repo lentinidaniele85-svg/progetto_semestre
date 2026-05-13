@@ -65,7 +65,6 @@ _DEFAULTS: dict = {
     "mode": "interactive",
     "_graph_mode": "interactive",
     "_last_error": None,  # persists error messages across st.rerun()
-    "is_italian": False,
 }
 
 for _k, _v in _DEFAULTS.items():
@@ -128,9 +127,10 @@ def _stream(graph, input_state_or_none, config, status_label: str) -> dict:
     """
     last: dict = {}
     prev_thought_count = len(st.session_state.graph_state.get("thought_log", []))
+    prev_assumptions_count = len(st.session_state.graph_state.get("assumptions_list", []))
 
     async def _consume():
-        nonlocal last
+        nonlocal last, prev_assumptions_count
         async for event in graph.astream(
             input_state_or_none, config, stream_mode="values"
         ):
@@ -139,6 +139,16 @@ def _stream(graph, input_state_or_none, config, status_label: str) -> dict:
             thoughts: list[str] = event.get("thought_log", [])
             if thoughts:
                 status.write(f"**Step {len(thoughts)}:** {thoughts[-1]}")
+            
+            assumptions: list[str] = event.get("assumptions_list", [])
+            if len(assumptions) > prev_assumptions_count:
+                new_assumptions = assumptions[prev_assumptions_count:]
+                for a in new_assumptions:
+                    if "fallback" in a.lower() or "3.5" in a:
+                        st.toast(f"Data fallback applied: {a}", icon="🚨")
+                    else:
+                        st.toast(f"Assumption made: {a}", icon="💡")
+                prev_assumptions_count = len(assumptions)
 
     with st.status(status_label, expanded=True) as status:
         # Use the running loop when available (nest_asyncio patches its
@@ -181,8 +191,6 @@ def _process_agent_run(user_input: str, is_feedback: bool = False) -> None:
     config = _thread_config()
     mode = st.session_state.mode
 
-    is_ita = st.session_state.get("is_italian", False)
-    
     if is_feedback:
         graph.update_state(
             config,
@@ -192,7 +200,7 @@ def _process_agent_run(user_input: str, is_feedback: bool = False) -> None:
             },
         )
         stream_input = None
-        status_msg = "🤖 Elaborazione del feedback..." if is_ita else "🤖 Processing your feedback..."
+        status_msg = "🤖 Processing your feedback..."
     else:
         stream_input = {
             "user_input": user_input,
@@ -200,7 +208,7 @@ def _process_agent_run(user_input: str, is_feedback: bool = False) -> None:
             "thought_log": [],
             "chat_history": list(st.session_state.chat_history),
         }
-        status_msg = "🤖 L'agente sta analizzando il tuo prodotto..." if is_ita else "🤖 Agent is analysing your product..."
+        status_msg = "🤖 Agent is analysing your product..."
 
     try:
         _stream(graph, stream_input, config, status_msg)
@@ -221,7 +229,7 @@ def _process_agent_run(user_input: str, is_feedback: bool = False) -> None:
     if not is_feedback and mode == "auto":
         _add_message(
             "assistant",
-            "Analisi completata! Consulta la dashboard a destra per i risultati completi." if is_ita else "Analysis complete! See the dashboard on the right for the full results.",
+            "Analysis complete! See the dashboard on the right for the full results.",
         )
         st.session_state.awaiting_approval = None
         return
@@ -234,47 +242,34 @@ def _process_agent_run(user_input: str, is_feedback: bool = False) -> None:
         if constraints:
             constraints_str = "\n".join([f"- **{k}**: {v}" for k, v in constraints.items()])
         else:
-            constraints_str = "- *(Nessun vincolo specifico estratto)*" if is_ita else "- *(No specific constraints extracted)*"
+            constraints_str = "- *(No specific constraints extracted)*"
         
-        if is_ita:
-            msg = f"Ho estratto questi vincoli e specifiche dal tuo input:\n{constraints_str}\n\n**Vanno bene o vuoi aggiungere/modificare qualcosa?** Scrivi le modifiche o premi **Approva** per continuare."
-        else:
-            msg = f"I've extracted these constraints and specifications from your input:\n{constraints_str}\n\n**Are these okay or would you like to add/modify some?** Type your changes or press **Approve** to continue."
-        
+        msg = f"I've extracted these constraints and specifications from your input:\n{constraints_str}\n\n**Are these okay or would you like to add/modify some?** Type your changes or press **Approve** to continue."
         _add_message("assistant", msg)
         st.session_state.awaiting_approval = "constraints"
     elif next_node == "human_feedback_processor" and phase == "interview":
         questions = st.session_state.graph_state.get("pending_feedback", "More details needed.")
         if not is_feedback and questions == "More details needed.":
              questions = "Can you provide more specific details about dimensions, load, and usage environment?"
-        msg = f"Mi servono alcuni dettagli aggiuntivi prima di procedere:\n\n{questions}\n\n**Per favore, rispondi con le specifiche mancanti.**" if not is_feedback else f"Mancano ancora alcuni dettagli:\n\n{questions}\n\n**Per favore, fornisci le specifiche.**"
+        msg = f"Some additional details are needed before proceeding:\n\n{questions}\n\n**Please provide the missing specifications.**"
         _add_message("assistant", msg)
         st.session_state.awaiting_approval = "interview"
     elif next_node == "human_feedback_processor" and phase == "workflow":
-        if is_ita:
-            msg = "Ho mappato i processi manifatturieri e scomposto i componenti.\n\n**Per favore, verifica il workflow qui sopra.** Scrivi le modifiche o premi **Approva** per procedere con l'ideazione dei materiali."
-        else:
-            msg = "I've mapped the required manufacturing processes and component breakdown.\n\n**Please verify the workflow above.** Type any modifications or hit **Approve** to proceed with Material Ideation."
+        msg = "I've mapped the required manufacturing processes and component breakdown.\n\n**Please verify the workflow above.** Type any modifications or hit **Approve** to proceed with Material Ideation."
         _add_message("assistant", msg)
         st.session_state.awaiting_approval = "workflow"
     elif phase == "error":
-        msg = "Si è verificato un errore durante l'analisi. Premi **Riavvia Sessione** per riprovare." if is_ita else "An error occurred during analysis. Please press **Restart Session** to try again."
+        msg = "An error occurred during analysis. Please press **Restart Session** to try again."
         _add_message("assistant", msg)
         st.session_state.awaiting_approval = None
     else:
         if not is_feedback:
-            msg = "Analisi completata!" if is_ita else "Analysis complete!"
+            msg = "Analysis complete!"
         else:
-            msg = "Ottimizzazione completata! I punteggi MCDA finali e i materiali consigliati sono mostrati nella dashboard." if is_ita else "Optimisation complete! Final MCDA scores and the best material recommendations are shown in the dashboard."
+            msg = "Optimisation complete! Final MCDA scores and the best material recommendations are shown in the dashboard."
         _add_message("assistant", msg)
         st.session_state.awaiting_approval = None
 
-
-def _is_italian_text(text: str) -> bool:
-    if not text: return False
-    words = set(text.lower().replace(".", " ").replace(",", " ").split())
-    ita_words = {"di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "una", "e", "o", "ma", "che", "non", "si", "mi", "ti", "ci", "vi", "kg", "cina", "propilene", "plastica", "acciaio", "legno"}
-    return len(words.intersection(ita_words)) > 0
 
 def handle_input(user_input: str) -> None:
     """Start a fresh agent run for a new product description."""
@@ -285,7 +280,6 @@ def handle_input(user_input: str) -> None:
     st.session_state.thread_id = str(uuid.uuid4())
     st.session_state.pop("cached_pdf_bytes", None)
     st.session_state.pop("cached_pdf_state_id", None)
-    st.session_state.is_italian = _is_italian_text(user_input)
     _process_agent_run(user_input, is_feedback=False)
 
 
@@ -306,21 +300,19 @@ def handle_reject() -> None:
     st.session_state.thread_id = str(uuid.uuid4())
     st.session_state.pop("cached_pdf_bytes", None)
     st.session_state.pop("cached_pdf_state_id", None)
-    is_ita = st.session_state.get("is_italian", False)
-    msg = "Sessione riavviata. Descrivi un nuovo prodotto da ottimizzare." if is_ita else "Session reset. Please describe a new product to optimise."
+    msg = "Session reset. Please describe a new product to optimise."
     _add_message("assistant", msg)
 
 @st.dialog("Restart Session")
 def _confirm_restart():
-    is_ita = st.session_state.get("is_italian", False)
-    st.write("Questa operazione eliminerà l'analisi corrente. Sei sicuro?" if is_ita else "This will delete the current analysis. Are you sure?")
+    st.write("Are you sure? This will delete all current progress.")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Sì, riavvia" if is_ita else "Yes, restart", type="primary", use_container_width=True):
+        if st.button("Yes, restart", type="primary", use_container_width=True):
             handle_reject()
             st.rerun()
     with col2:
-        if st.button("Annulla" if is_ita else "Cancel", use_container_width=True):
+        if st.button("Cancel", use_container_width=True):
             st.rerun()
 
 
@@ -401,20 +393,18 @@ with left_col:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-    is_ita = st.session_state.get("is_italian", False)
-    
     # Quick-action buttons — contextual grouping based on agent state
     if st.session_state.awaiting_approval:
         if st.session_state.awaiting_approval == "interview":
-            stage_label = "Intervista" if is_ita else "Interview"
+            stage_label = "Interview"
         elif st.session_state.awaiting_approval == "constraints":
-            stage_label = "Vincoli" if is_ita else "Constraints"
+            stage_label = "Constraints"
         else:
             stage_label = "Workflow"
         st.divider()
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
-            btn_lbl = f"✅ Approva {stage_label}" if is_ita else f"✅ Approve {stage_label}"
+            btn_lbl = f"✅ Approve {stage_label}"
             if st.button(
                 btn_lbl,
                 width="stretch",
@@ -424,12 +414,12 @@ with left_col:
                 if not st.session_state._last_error:
                     st.rerun()
         with btn_col2:
-            btn_restart = "❌ Riavvia Sessione" if is_ita else "❌ Restart Session"
+            btn_restart = "❌ Restart Session"
             if st.button(btn_restart, width="stretch"):
                 _confirm_restart()
     elif st.session_state.graph_state:
         st.divider()
-        btn_restart = "❌ Riavvia Sessione" if is_ita else "❌ Restart Session"
+        btn_restart = "❌ Restart Session"
         if st.button(btn_restart, width="stretch"):
             _confirm_restart()
 
@@ -440,18 +430,15 @@ with left_col:
     # Chat input — NEVER disabled; placeholder adapts to co-pilot state
     if st.session_state.awaiting_approval:
         if st.session_state.awaiting_approval == "interview":
-            stage = "alle domande" if is_ita else "interview questions"
+            stage = "interview questions"
         elif st.session_state.awaiting_approval == "constraints":
-            stage = "sui vincoli" if is_ita else "constraints"
+            stage = "constraints"
         else:
-            stage = "sul workflow" if is_ita else "Workflow"
+            stage = "Workflow"
             
-        if is_ita:
-            placeholder = f"Rispondi {stage} o scrivi 'Approve' per continuare…"
-        else:
-            placeholder = f"Please answer the {stage} or type 'Approve' to continue…"
+        placeholder = f"Please answer the {stage} or type 'Approve' to continue…"
     else:
-        placeholder = "Descrivi un prodotto da ottimizzare (es. 'Una sedia da ufficio')…" if is_ita else "Describe a product to optimise (e.g. 'An office chair')…"
+        placeholder = "Describe a product to optimise (e.g. 'An office chair')…"
 
     user_input = st.chat_input(placeholder)
     if user_input:
@@ -465,40 +452,90 @@ with left_col:
 
 # ── Right Column — Live Dashboard ────────────────────────────────────────────
 with right_col:
-
     state = st.session_state.graph_state
     phase = state.get("current_phase", "init")
 
+    # ── Phase ordering helper ────────────────────────────────────────────────
+    _PHASE_ORDER = ["init", "constraints", "interview", "workflow", "material", "lca", "mcda", "complete"]
+
+    def _phase_gte(current: str, target: str) -> bool:
+        try:
+            return _PHASE_ORDER.index(current) >= _PHASE_ORDER.index(target)
+        except ValueError:
+            return False
+
+    # ── Welcome screen (init only) ───────────────────────────────────────────
     if phase == "init":
-        msg = ("👋 **Benvenuto nel Sustainable Product Optimizer!**\n\nDescrivi un prodotto qui a sinistra per iniziare. La dashboard mostrerà progressivamente le informazioni, la distinta base (BOM) e le metriche ambientali mano a mano che l'analisi avanza." if is_ita else "👋 **Welcome to the Sustainable Product Optimizer!**\n\nDescribe a product on the left to begin. The dashboard will progressively reveal insights, BOM decomposition, and environmental metrics as the analysis advances.")
+        msg = (
+            "👋 **Welcome to the Sustainable Product Optimizer!**\n\n"
+            "Describe a product on the left to begin. The dashboard will progressively reveal insights, "
+            "BOM decomposition, and environmental metrics as the analysis advances."
+        )
         st.info(msg, icon="ℹ️")
+
     else:
-        # ── 0. 7-Steps LCA Workflow Tracker ─────────────────────────────────────
-        current_step = state.get("current_lca_step", 1)
-        st.subheader("🏁 Progresso 7-Passi" if is_ita else "🏁 7-Steps Progress")
-        
-        steps = [
-            "Estrazione Entità" if is_ita else "Entity Extraction",
-            "Raccolta Dati" if is_ita else "Data Collection",
-            "Workflow & BOM" if is_ita else "Workflow & BOM",
-            "Alternative Materiali" if is_ita else "Material Alternatives",
-            "Validazione LCA" if is_ita else "LCA Validation",
-            "Punteggio MCDA" if is_ita else "MCDA Scoring",
-            "Report Finale" if is_ita else "Final Report"
+        # ── Dynamic 7-Steps SOP Tracker ─────────────────────────────────────
+        _SOP_STEPS = [
+            ("1", "Entity Analysis",       "constraints"),
+            ("2", "Data Collection",       "interview"),
+            ("3", "Workflow & BOM",        "workflow"),
+            ("4", "Material Alternatives", "material"),
+            ("5", "LCA Validation",        "lca"),
+            ("6", "MCDA Scoring",          "mcda"),
+            ("7", "Final Report",          "complete"),
         ]
-        cols = st.columns(len(steps))
-        for i, col in enumerate(cols):
-            step_num = i + 1
+
+        st.subheader("🏁 7-Steps SOP Progress")
+        step_cols = st.columns(len(_SOP_STEPS))
+        for col, (num, label, step_phase) in zip(step_cols, _SOP_STEPS):
             with col:
-                if step_num < current_step:
-                    st.markdown(f"<div style='font-size:12px; color:#10b981;'><b>✅ {step_num}. {steps[i]}</b></div>", unsafe_allow_html=True)
-                elif step_num == current_step:
-                    st.markdown(f"<div style='font-size:12px; color:#f59e0b;'><b>🔄 {step_num}. {steps[i]}</b></div>", unsafe_allow_html=True)
+                if phase == step_phase:
+                    st.markdown(
+                        f"<div style='font-size:11px;color:#f59e0b;'><b>🔄 {num}. {label}</b></div>",
+                        unsafe_allow_html=True,
+                    )
+                elif _phase_gte(phase, step_phase):
+                    st.markdown(
+                        f"<div style='font-size:11px;color:#10b981;'><b>✅ {num}. {label}</b></div>",
+                        unsafe_allow_html=True,
+                    )
                 else:
-                    st.markdown(f"<div style='font-size:12px; color:#9ca3af;'><b>⏳ {step_num}. {steps[i]}</b></div>", unsafe_allow_html=True)
-        
+                    st.markdown(
+                        f"<div style='font-size:11px;color:#6b7280;'><b>⏳ {num}. {label}</b></div>",
+                        unsafe_allow_html=True,
+                    )
+
+        # Live st.status showing current SOP step
+        _phase_label_map = {
+            "constraints": "1 · Entity Analysis",
+            "interview":   "2 · Data Collection",
+            "workflow":    "3 · Workflow & BOM",
+            "material":    "4 · Material Alternatives",
+            "lca":         "5 · LCA Validation",
+            "mcda":        "6 · MCDA Scoring",
+            "complete":    "7 · Final Report",
+            "error":       "❌ Error",
+        }
+        _current_label = _phase_label_map.get(phase, phase)
+
+        if phase == "complete":
+            st.status(f"✅ Step {_current_label}", state="complete", expanded=False)
+        elif phase == "error":
+            st.status(f"❌ {_current_label}", state="error", expanded=False)
+        else:
+            with st.status(f"⚙️ Running Step {_current_label}…", state="running", expanded=False):
+                thought_log: list[str] = state.get("thought_log", [])
+                if thought_log:
+                    st.write(f"**Latest thought:** {thought_log[-1]}")
+
         st.divider()
 
+        # ── Error banner ─────────────────────────────────────────────────────
+        if phase == "error":
+            err_msg = state.get("error_message", "Unknown error.")
+            st.error(f"❌ **Error during analysis:** {err_msg}\n\nPress **Restart Session** to try again.", icon="🔴")
+
+        # ── Assumptions ──────────────────────────────────────────────────────
         assumptions = state.get("assumptions_list", [])
         if assumptions:
             st.markdown("**Assunzioni e Dati Esterni:**")
@@ -508,18 +545,18 @@ with right_col:
                 else:
                     st.warning(f"ℹ️ Assumption: {a}", icon="🟡")
 
-        # T07: mostra errore esplicito se current_phase == "error"
-        if phase == "error":
-            err_lbl = "Errore durante l'analisi:" if is_ita else "Error during analysis:"
-            err_msg = state.get('error_message', 'Errore sconosciuto.' if is_ita else 'Unknown error.')
-            err_retry = "Premi **Riavvia Sessione** per riprovare." if is_ita else "Press **Restart Session** to try again."
-            st.error(
-                f"❌ **{err_lbl}** {err_msg}\n\n{err_retry}",
-                icon="🔴",
-            )
+        # ── Thought Log — visible during early phases ─────────────────────
+        if phase in ("constraints", "interview"):
+            thoughts: list[str] = state.get("thought_log", [])
+            if thoughts:
+                with st.expander("🧠 Thought Log — Agent Reasoning", expanded=True):
+                    for i, t in enumerate(thoughts, 1):
+                        st.markdown(f"**{i}.** {t}")
+            else:
+                st.caption("⏳ Waiting for agent thoughts…")
 
-        # ── Phase 1-2: Input & Constraints ──────────────────────────────────────
-        if phase in ["init", "constraints", "interview"]:
+        # ── Constraints (phase >= constraints) ───────────────────────────
+        if _phase_gte(phase, "constraints"):
             st.subheader("📋 Extracted Constraints")
             constraints = state.get("constraints", {})
             if constraints:
@@ -528,25 +565,22 @@ with right_col:
             else:
                 st.caption("Constraints will appear here once extracted from your input…")
 
-        # ── Phase 3-4: BOM & Workflow ───────────────────────────────────────────
-        # ── 1.5 Workflow Produttivo ──────────────────────────────────────────────
-        if phase in ["workflow", "material"]:
+        # ── Manufacturing Workflow + BOM (phase >= workflow) ──────────────
+        if _phase_gte(phase, "workflow"):
             st.subheader("⚙️ Manufacturing Workflow")
             workflow = state.get("workflow_steps", [])
             if workflow:
                 st.markdown("The creation of the object has been broken down into the following processes:")
                 for idx, step in enumerate(workflow, 1):
                     if isinstance(step, dict):
-                        p_name = step.get('process_name', '')
-                        p_out = step.get('process_output', '')
+                        p_name = step.get("process_name", "")
+                        p_out  = step.get("process_output", "")
                         st.markdown(f"**Phase {idx}**: {p_name} ➔ **Output**: {p_out}")
                     else:
                         st.markdown(f"**Phase {idx}**: {step}")
             else:
-                st.caption("The manufacturing workflow (Phase 1) will appear here…")
+                st.caption("The manufacturing workflow will appear here…")
 
-        # ── 2. Bill of Materials ─────────────────────────────────────────────────
-        if phase in ["workflow", "material"]:
             st.subheader("📋 Bill of Materials")
             bom: list[dict] = state.get("bom", [])
             if bom:
@@ -566,9 +600,8 @@ with right_col:
             else:
                 st.caption("The BOM will appear after the agent decomposes the product…")
 
-        # ── Phase 5-6: LCA & MCDA ───────────────────────────────────────────────
-        # ── 3. LCA Alternatives ─────────────
-        if phase in ["lca", "mcda", "complete", "error"]:
+        # ── Material Alternatives (phase >= material) ─────────────────────
+        if _phase_gte(phase, "material"):
             lca_results: list[dict] = state.get("lca_results", [])
             mcda_scores: list[dict] = state.get("mcda_scores", [])
 
@@ -581,123 +614,110 @@ with right_col:
                     ):
                         rows = []
                         for alt in comp.get("alternatives", []):
-                            rows.append(
-                                {
-                                    "Alternative": alt["name"],
-                                    f"Impact ({settings.environmental_impact_unit})": alt["scores"]["environmental_impact"],
-                                    "Energy (MJ)": alt["scores"]["energy_mj"],
-                                    "Cost Tier": alt["scores"]["cost_tier"],
-                                    "Aesthetic Match": f"{alt['aesthetic_match']:.0%}",
-                                    "Structural Match": f"{alt['structural_match']:.0%}",
-                                }
-                            )
+                            rows.append({
+                                "Alternative": alt["name"],
+                                f"Impact ({settings.environmental_impact_unit})": alt["scores"]["environmental_impact"],
+                                "Energy (MJ)": alt["scores"]["energy_mj"],
+                                "Cost Tier": alt["scores"]["cost_tier"],
+                                "Aesthetic Match": f"{alt['aesthetic_match']:.0%}",
+                                "Structural Match": f"{alt['structural_match']:.0%}",
+                            })
                         if rows:
                             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-        # ── 4. Environmental Impact Chart + MCDA Recommendations ──────────────────────────
-        if phase in ["lca", "mcda", "complete", "error"]:
+        # ── LCA Chart + MCDA Table (phase >= mcda) ───────────────────────
+        if _phase_gte(phase, "mcda"):
             mcda_scores: list[dict] = state.get("mcda_scores", [])
             lca_results: list[dict] = state.get("lca_results", [])
+
             if mcda_scores and lca_results:
                 st.subheader("🌍 Environmental Impact: Original vs. Optimised")
-
                 orig_co2_lookup: dict[str, float] = {
                     r["component_name"]: r["original_scores"]["environmental_impact"]
                     for r in lca_results
                 }
-
                 chart_rows = []
                 for comp in mcda_scores:
                     name = comp["component_name"]
                     orig = orig_co2_lookup.get(name, 0.0)
                     best = comp.get("best_alternative")
                     optimised = orig * (1 - best["impact_reduction_pct"] / 100) if best else orig
-                    chart_rows.append(
-                        {
-                            "Component": name,
-                            f"Original ({settings.environmental_impact_unit})": round(orig, 3),
-                            f"Optimised ({settings.environmental_impact_unit})": round(optimised, 3),
-                        }
-                    )
-
+                    chart_rows.append({
+                        "Component": name,
+                        f"Original ({settings.environmental_impact_unit})": round(orig, 3),
+                        f"Optimised ({settings.environmental_impact_unit})": round(optimised, 3),
+                    })
                 if chart_rows:
                     chart_df = pd.DataFrame(chart_rows).set_index("Component")
                     st.bar_chart(chart_df, color=["#e05555", "#33b86c"])
 
-                # MCDA Recommendations table
                 st.subheader("🏆 MCDA Recommendations")
                 summary_rows = []
                 for comp in mcda_scores:
                     best = comp.get("best_alternative")
                     if best:
-                        summary_rows.append(
-                            {
-                                "Component": comp["component_name"],
-                                "Original Material": comp["original_material"],
-                                "Best Alternative": best["name"],
-                                "Impact Reduction (%)": f"{best['impact_reduction_pct']:.1f}%",
-                                "Cost Δ (tier)": best["cost_delta"],
-                                "MCDA Score": round(best["mcda_score"], 3),
-                                "Justification": best["justification"],
-                            }
-                        )
+                        summary_rows.append({
+                            "Component":            comp["component_name"],
+                            "Original Material":    comp["original_material"],
+                            "Best Alternative":     best["name"],
+                            "Impact Reduction (%)": f"{best['impact_reduction_pct']:.1f}%",
+                            "Cost Δ (tier)":        best["cost_delta"],
+                            "MCDA Score":           round(best["mcda_score"], 3),
+                            "Justification":        best["justification"],
+                        })
                 if summary_rows:
-                    st.dataframe(
-                        pd.DataFrame(summary_rows),
+                    st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
+
+        # ── Download buttons — ONLY when complete ────────────────────────
+        if phase == "complete":
+            st.divider()
+            st.success("✅ Optimisation complete! Download the full report below.")
+
+            import hashlib, json
+            _pdf_key         = "cached_pdf_bytes"
+            _pdf_state_key   = "cached_pdf_state_id"
+            _pdf_key_content = hashlib.md5(
+                json.dumps(state.get("mcda_scores", []), sort_keys=True).encode()
+            ).hexdigest()
+
+            if (
+                _pdf_key not in st.session_state
+                or st.session_state.get(_pdf_state_key) != _pdf_key_content
+            ):
+                st.session_state[_pdf_key]       = generate_pdf_report(state)
+                st.session_state[_pdf_state_key] = _pdf_key_content
+            pdf_bytes = st.session_state[_pdf_key]
+
+            if pdf_bytes is not None:
+                col_pdf, col_html = st.columns(2)
+                with col_pdf:
+                    st.download_button(
+                        label="📄 Download Optimization Report (PDF)",
+                        data=pdf_bytes,
+                        file_name="optimization_report.pdf",
+                        mime="application/pdf",
                         width="stretch",
-                        hide_index=True,
+                        type="primary",
                     )
+                with col_html:
+                    st.download_button(
+                        label="📥 Download Optimization Report (HTML)",
+                        data=generate_html_report(state),
+                        file_name="optimization_report.html",
+                        mime="text/html",
+                        width="stretch",
+                    )
+            else:
+                st.warning(
+                    "PDF export is unavailable: WeasyPrint system dependencies "
+                    "(Cairo/Pango/GTK3) are not installed on this machine. "
+                    "See README for installation instructions."
+                )
+                st.download_button(
+                    label="📥 Download Optimization Report (HTML)",
+                    data=generate_html_report(state),
+                    file_name="optimization_report.html",
+                    mime="text/html",
+                    width="stretch",
+                )
 
-                if phase == "complete":
-                    st.divider()
-                    st.success("✅ Optimisation complete! Download the full report below.")
-
-                    # Cache PDF bytes in session state so WeasyPrint only runs once per
-                    # completed analysis, not on every Streamlit rerender.
-                    _pdf_key = "cached_pdf_bytes"
-                    _pdf_state_key = "cached_pdf_state_id"
-                    import hashlib, json
-                    _pdf_key_content = hashlib.md5(
-                        json.dumps(state.get("mcda_scores", []), sort_keys=True).encode()
-                    ).hexdigest()
-                    
-                    if (
-                        _pdf_key not in st.session_state
-                        or st.session_state.get(_pdf_state_key) != _pdf_key_content
-                    ):
-                        st.session_state[_pdf_key] = generate_pdf_report(state)
-                        st.session_state[_pdf_state_key] = _pdf_key_content
-                    pdf_bytes = st.session_state[_pdf_key]
-
-                    if pdf_bytes is not None:
-                        col_pdf, col_html = st.columns(2)
-                        with col_pdf:
-                            st.download_button(
-                                label="📄 Download Optimization Report (PDF)",
-                                data=pdf_bytes,
-                                file_name="optimization_report.pdf",
-                                mime="application/pdf",
-                                width="stretch",
-                                type="primary",
-                            )
-                        with col_html:
-                            st.download_button(
-                                label="📥 Download Optimization Report (HTML)",
-                                data=generate_html_report(state),
-                                file_name="optimization_report.html",
-                                mime="text/html",
-                                width="stretch",
-                            )
-                    else:
-                        st.warning(
-                            "PDF export is unavailable: WeasyPrint system dependencies "
-                            "(Cairo/Pango/GTK3) are not installed on this machine. "
-                            "See README for installation instructions."
-                        )
-                        st.download_button(
-                            label="📥 Download Optimization Report (HTML)",
-                            data=generate_html_report(state),
-                            file_name="optimization_report.html",
-                            mime="text/html",
-                            width="stretch",
-                        )

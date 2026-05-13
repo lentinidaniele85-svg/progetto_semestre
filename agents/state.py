@@ -1,15 +1,23 @@
-from typing import TypedDict, Literal
+from typing import TypedDict, Literal, Optional
 
 
 class AgentState(TypedDict, total=False):
+    """
+    Stato condiviso del grafo LangGraph.
+
+    Nota: TypedDict non impone valori di default a runtime.
+    Il valore iniziale di `current_phase` è "init"; viene impostato
+    esplicitamente da ogni nodo prima di restituire il dizionario.
+    """
     user_input: str
     mode: Literal["auto", "interactive"]
 
     # Fase corrente del grafo — usata per routing esplicito (T07)
     # Valori: "init" | "constraints" | "interview" | "workflow" |
     #         "material" | "lca" | "mcda" | "complete" | "error"
+    # Default logico: "init" (impostato da constraint_extractor al primo run)
     current_phase: str
-    error_message: str  # Messaggio di errore da mostrare in UI
+    error_message: Optional[str]  # Messaggio di errore da mostrare in UI (None se nessun errore)
 
     constraints: dict
     workflow_steps: list[dict]

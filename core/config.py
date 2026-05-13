@@ -44,3 +44,22 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ---------------------------------------------------------------------------
+# Costanti fisiche LCA — centralizzate qui per facilità di taratura
+# ---------------------------------------------------------------------------
+
+# Impatto processo manifatturiero [kg CO₂ eq / kg prodotto]
+PROCESS_IMPACTS: dict[str, float] = {
+    "Blow moulding": 0.8,
+    "Injection moulding": 1.2,
+    "Extrusion (film)": 0.5,
+    "Extrusion": 0.6,
+}
+
+# Impatto trasporto [kg CO₂ eq / (tonnellata · km)]
+TRANSPORT_IMPACT_PER_TKM: float = 0.05
+
+# Valore di fallback cautelativo per materiali non trovati nel database [kg CO₂ eq / kg]
+CO2_FALLBACK_VALUE: float = 3.5
