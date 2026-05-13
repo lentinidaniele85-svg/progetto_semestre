@@ -98,26 +98,6 @@ def _normalise_location(raw: Optional[str]) -> str:
     return _LOCATION_NORMALISE.get(raw.strip().lower(), raw.strip())
 
 
-def _get_fallback_chain(canonical_location: str) -> List[str]:
-    """Build the ordered list of locations to try after the primary one fails.
-
-    For a specific country code (e.g. "IT") the chain is:
-        ["IT", "RER", "GLO", "RoW"]
-
-    For a regional code already in the chain (e.g. "RER") the chain starts
-    from that point onward:
-        ["RER", "GLO", "RoW"]
-
-    For an empty / already-global location the chain is just ["GLO", "RoW"].
-    """
-    loc = canonical_location.upper() if canonical_location else ""
-    if loc in ("GLO", "ROW", ""):
-        return [canonical_location] if canonical_location else ["GLO", "RoW"]
-    if loc == "RER":
-        return ["RER", "GLO", "RoW"]
-    # Specific country → full chain
-    return [canonical_location] + GEOGRAPHIC_FALLBACK_CHAIN
-
 
 class CSVLcaClient(LCADataProvider):
     """LCA data provider backed by a local Excel file containing LCA scores."""
@@ -189,32 +169,28 @@ class CSVLcaClient(LCADataProvider):
 
     def find_closest_match(
         self,
-        label: str,
-        location: Optional[str] = None,
+        target_product: str,
+        target_geography: Optional[str] = None,
         threshold: float = 0.5,
     ) -> Optional[dict]:
-        """Find the closest matching material using substring + difflib search.
+        """Find the closest matching material using a Hierarchical Filtered Search.
 
         Parameters
         ----------
-        label:
-            Material name to search for.
-        location:
+        target_product:
+            Material name to search for (e.g., 'concrete', 'steel').
+        target_geography:
             Optional location hint (country name, ISO code, or region code).
-            Supports Italian names and common aliases; mapped internally to
-            canonical dataset codes via ``_normalise_location``.
         threshold:
-            Minimum difflib similarity score (0–1).
+            Minimum difflib similarity score (0-1).
 
         Returns
         -------
         dict or None
             Match record including ``location_fallback_used`` flag.
-            ``location_fallback_used`` is *True* when the result comes from a
-            broader geographic scope than the one originally requested.
         """
-        label_lower = label.lower().strip()
-        canonical_loc = _normalise_location(location)
+        label_lower = target_product.lower().strip()
+        canonical_loc = _normalise_location(target_geography).upper()
 
         cache_key = f"{label_lower}__{canonical_loc}"
         if cache_key in self._match_cache:
@@ -223,91 +199,97 @@ class CSVLcaClient(LCADataProvider):
         if self._df.empty:
             return None
 
-        # Build the ordered list of locations to try
-        chain = _get_fallback_chain(canonical_loc) if canonical_loc else [""]
-
-        result: Optional[dict] = None
-        location_fallback_used = False
-
-        for attempt_idx, attempt_loc in enumerate(chain):
-            row = self._search_in_location(label_lower, attempt_loc, threshold)
-            if row is not None:
-                location_fallback_used = attempt_idx > 0
-                result = self._build_result(row, location_fallback_used)
-                break
-
-        # If even the full fallback chain failed, try completely without
-        # location filter as a last resort.
-        if result is None and canonical_loc:
-            row = self._search_in_location(label_lower, "", threshold)
-            if row is not None:
-                location_fallback_used = True
-                result = self._build_result(row, location_fallback_used)
-
-        self._match_cache[cache_key] = result
-        return result
-
-    # ------------------------------------------------------------------
-    # Internal search helpers
-    # ------------------------------------------------------------------
-
-    def _search_in_location(
-        self, label_lower: str, loc: str, threshold: float
-    ) -> Optional[pd.Series]:
-        """Return the best-matching DataFrame row for *label_lower* within *loc*.
-
-        Parameters
-        ----------
-        loc:
-            Canonical location string. Empty string → search without filter.
-        """
-        df_search = self._df
-
-        if loc:
-            # Try exact match first, then partial/case-insensitive
-            mask_exact = df_search["location"].str.upper() == loc.upper()
-            if mask_exact.any():
-                df_search = df_search[mask_exact]
-            else:
-                mask_partial = df_search["location"].str.contains(
-                    loc, case=False, na=False, regex=False
-                )
-                if not mask_partial.any():
-                    return None  # location not in dataset at all
-                df_search = df_search[mask_partial]
-
-        # --- Substring match (preferred) ---
-        mask_sub = df_search["_flowname_lower"].str.contains(
-            label_lower, regex=False, na=False
-        )
-        subset = df_search[mask_sub]
-
-        if not subset.empty:
-            # Prefer "market for …" processes (more representative in ecoinvent)
-            market = subset[
-                subset["processname"].str.contains("market for", case=False, na=False)
-            ]
-            if not market.empty:
-                subset = market
-            # Among candidates pick shortest name (most specific match)
-            unique_names = subset["_flowname_lower"].unique()
-            best = min(unique_names, key=len)
-            return subset[subset["_flowname_lower"] == best].iloc[0]
-
-        # --- Difflib fuzzy match (fallback within location) ---
-        unique_names = df_search["_flowname_lower"].unique()
-        matches = difflib.get_close_matches(
-            label_lower, unique_names, n=1, cutoff=threshold
-        )
-        if not matches:
+        # -------------------------------------------------------------------
+        # FASE A: Exact Match Material (Case Insensitive)
+        # -------------------------------------------------------------------
+        unique_names = self._df["_flowname_lower"].dropna().unique()
+        
+        # Substring exact matches
+        exact_match_names = [name for name in unique_names if label_lower in name]
+        exact_match_found = len(exact_match_names) > 0
+        
+        if exact_match_found:
+            all_match_names = exact_match_names
+        else:
+            # Activate Fuzzy Match ONLY if no exact match is found
+            fuzzy_matches = difflib.get_close_matches(
+                label_lower, unique_names, n=50, cutoff=threshold
+            )
+            all_match_names = fuzzy_matches
+        
+        if not all_match_names:
+            self._match_cache[cache_key] = None
             return None
+            
+        candidates = self._df[self._df["_flowname_lower"].isin(all_match_names)].copy()
+        
+        # Score candidates for final selection
+        def adjust_score(row):
+            name = row["_flowname_lower"]
+            score = difflib.SequenceMatcher(None, label_lower, name).ratio()
+            if label_lower in name:
+                score += 1.0
+            if "market for" in str(row["processname"]).lower():
+                score += 0.5
+            return score
+            
+        candidates["similarity_score"] = candidates.apply(adjust_score, axis=1)
+        candidates["name_len"] = candidates["_flowname_lower"].apply(len)
+        candidates = candidates.sort_values(
+            by=["similarity_score", "name_len"], 
+            ascending=[False, True]
+        )
 
-        best = matches[0]
-        match_rows = df_search[df_search["_flowname_lower"] == best]
-        market_rows = match_rows[
-            match_rows["processname"].str.contains("market for", case=False, na=False)
-        ]
-        return market_rows.iloc[0] if not market_rows.empty else match_rows.iloc[0]
+        # -------------------------------------------------------------------
+        # FASE B: Filtro Geografico Gerarchico
+        # -------------------------------------------------------------------
+        filtered_candidates = pd.DataFrame()
+        location_fallback_used = False
+        geo_level_used = "GLO"
+        
+        if canonical_loc:
+            # Priority 1: Exact match with target_geography
+            exact_match = candidates[candidates["location"].str.upper() == canonical_loc]
+            if not exact_match.empty:
+                filtered_candidates = exact_match
+                geo_level_used = canonical_loc
+            else:
+                # Priority 2: Continental Fallback (RER)
+                rer_match = candidates[candidates["location"].str.upper() == "RER"]
+                if not rer_match.empty:
+                    filtered_candidates = rer_match
+                    location_fallback_used = True
+                    geo_level_used = "RER"
+                else:
+                    # Priority 3: Global Fallback (GLO)
+                    glo_match = candidates[candidates["location"].str.upper() == "GLO"]
+                    if not glo_match.empty:
+                        filtered_candidates = glo_match
+                        location_fallback_used = True
+                        geo_level_used = "GLO"
+                    else:
+                        # Extrema Ratio: Return None instead of picking a random country
+                        self._match_cache[cache_key] = None
+                        return None
+        else:
+            # No specific location requested
+            filtered_candidates = candidates
+            geo_level_used = filtered_candidates.iloc[0]["location"]
+            
+        if filtered_candidates.empty:
+            self._match_cache[cache_key] = None
+            return None
+            
+        # -------------------------------------------------------------------
+        # Phase 3: 'Process Selection'
+        # -------------------------------------------------------------------
+        best_row = filtered_candidates.iloc[0]
+        
+        result = self._build_result(best_row, location_fallback_used)
+        result["exact_match_found"] = exact_match_found
+        result["geo_level_used"] = geo_level_used
+        self._match_cache[cache_key] = result
+        return resulturn result
 
     def _build_result(self, row: pd.Series, location_fallback_used: bool) -> dict:
         """Construct the result dict from a matched DataFrame row."""

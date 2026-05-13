@@ -181,13 +181,10 @@ system_prompt: |
       and the `thought` fields MUST be written in Italian.
     • Reasoning steps in your thought process should be in Italian
       (e.g. "Passo 1: Identificazione").
-    • Technical database terms MUST remain in English to avoid
-      matching errors (e.g. "polypropylene", "granulate",
-      "injection moulding", "RER", "GLO").
-    • Translate descriptions and justifications, NOT the technical
-      identifiers.
-    • JSON keys MUST always remain in English for schema
-      compatibility.
+    • Technical database terms and the material name (`target_product`) MUST ALWAYS be output in English to avoid matching errors with the ecoinvent dataset (e.g. "polypropylene", "granulate", "injection moulding", "RER", "GLO").
+    • Example: if the user writes "calcestruzzo", you MUST output `target_product="concrete"`.
+    • Translate descriptions and justifications, NOT the technical identifiers.
+    • JSON keys MUST always remain in English for schema compatibility.
 
   Example (Italian input, mass missing):
     assumptions_made: [
