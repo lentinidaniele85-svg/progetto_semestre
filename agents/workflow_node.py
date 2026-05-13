@@ -1,5 +1,6 @@
 import json
 import logging
+# pyrefly: ignore [missing-import]
 from langchain_core.messages import HumanMessage, SystemMessage
 from agents.state import AgentState
 from core.llm_factory import ModelFactory
@@ -95,14 +96,8 @@ ALWAYS ensure:
             for comp_data in result.components:
                 comp_dict = comp_data.model_dump() if hasattr(comp_data, "model_dump") else (comp_data.dict() if hasattr(comp_data, "dict") else comp_data)
                 mat = comp_dict.get("material", "unknown") if isinstance(comp_dict, dict) else "unknown"
-                thought_log.append(f"Termine tradotto: {mat}")
-                match = provider.find_closest_match(target_product=mat, target_geography=geography, threshold=0.8)
-                if match:
-                    exact_str = "SI" if match.get("exact_match_found") else "NO"
-                    geo_used = match.get("geo_level_used", "N/A")
-                    thought_log.append(f"Match esatto trovato: {exact_str}")
-                    thought_log.append(f"Livello geografico utilizzato: {geo_used}")
-                else:
+                match = provider.find_closest_match(mat, location=geography, threshold=0.8)
+                if not match:
                     all_matched = False
                     break
             if all_matched:
@@ -147,9 +142,8 @@ ALWAYS ensure:
             comp = comp_data.model_dump()
             mat = comp.get("material", "unknown")
 
-            # 1. Match del materiale nel DataSet.xlsx
-            thought_log.append(f"Termine tradotto: {mat}")
-            best_match = provider.find_closest_match(target_product=mat, target_geography=geography)
+            # 1. Fuzzy Match del materiale nel DataSet.xlsx
+            best_match = provider.find_closest_match(mat, location=geography)
 
             if not best_match:
                 # ── STRICT MODE — MATERIAL NOT FOUND ─────────────────────────
@@ -181,11 +175,6 @@ ALWAYS ensure:
                     "error_message": f"Material not found: '{mat}' for geography '{geography}'",
                 }
             else:
-                exact_str = "SI" if best_match.get("exact_match_found") else "NO"
-                geo_used = best_match.get("geo_level_used", "N/A")
-                thought_log.append(f"Match esatto trovato: {exact_str}")
-                thought_log.append(f"Livello geografico utilizzato: {geo_used}")
-
                 loc_found = best_match.get("location", "")
                 if (
                     geography.lower() not in ["not specified", ""]
