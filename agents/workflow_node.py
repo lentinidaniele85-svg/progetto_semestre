@@ -145,20 +145,34 @@ ALWAYS ensure:
             best_match = provider.find_closest_match(mat, location=geography)
 
             if not best_match:
-                # ── FALLBACK CAUTELATIVO ──────────────────────────────────────
-                # Materiale non trovato nel database: usiamo 3.5 kg CO₂/kg come
-                # valore conservativo e lo documentiamo nelle assunzioni.
-                CO2_FALLBACK = 3.5
-                fallback_warning = (
-                    f"ATTENZIONE: Materiale '{mat}' non trovato nel database, "
-                    f"usato valore cautelativo di fallback di {CO2_FALLBACK} kg CO\u2082/kg."
+                # ── STRICT MODE — MATERIAL NOT FOUND ─────────────────────────
+                # Il materiale non è presente nel DB con sufficiente confidenza
+                # (threshold > 0.85) nella catena geografica [location → RER → GLO → RoW].
+                # Blocca il workflow e avvisa l'utente: NON usare dati non correlati.
+                error_msg = (
+                    f"⚠️ **Materiale non trovato nel database LCA** (soglia similarità: 0.85).\n\n"
+                    f"Il materiale **'{mat}'** non è presente nel dataset ecoinvent "
+                    f"per la geografia '{geography}' né nei proxy regionali (RER, GLO, RoW).\n\n"
+                    f"**Azioni possibili:**\n"
+                    f"- Fornisci un nome alternativo del materiale in inglese (es. 'polypropylene', 'steel').\n"
+                    f"- Specifica una geografia diversa (es. 'GLO', 'RER', 'Europe').\n"
+                    f"- Se il materiale è un prodotto agricolo o grezzo, potrebbe non essere "
+                    f"nel dataset dei materiali industriali."
                 )
-                assumptions.append(fallback_warning)
-                logger.warning(fallback_warning)
-                thought_log.append(f"⚠ Fallback CO₂ applicato per '{mat}': {CO2_FALLBACK} kg CO₂/kg")
-
-                comp["material_source"] = f"{mat} (fallback — non trovato nel database)"
-                comp["unit_impact_value"] = CO2_FALLBACK
+                assumptions.append(
+                    f"ERRORE RETRIEVAL: Materiale '{mat}' non trovato nel DB LCA (soglia 0.85) "
+                    f"per '{geography}'. Workflow interrotto per garantire l'integrità dei dati."
+                )
+                logger.warning("STRICT MODE: materiale '%s' non trovato per '%s'. Interrompo.", mat, geography)
+                thought_log.append(f"🚫 STRICT RETRIEVAL FAIL: '{mat}' @ '{geography}' → nessun match con confidenza ≥ 0.85.")
+                return {
+                    "pending_feedback": error_msg,
+                    "thought_log": thought_log,
+                    "assumptions_list": assumptions,
+                    "current_lca_step": 2,
+                    "current_phase": "error",
+                    "error_message": f"Material not found: '{mat}' for geography '{geography}'",
+                }
             else:
                 loc_found = best_match.get("location", "")
                 if (

@@ -177,18 +177,42 @@ async def lca_validator(state: AgentState) -> dict:
             orig_match = provider.find_closest_match(original_material, location=geography)
 
             if not orig_match:
-                # ── FALLBACK CAUTELATIVO ──────────────────────────────────
-                _warn = (
-                    f"ATTENZIONE: Materiale '{original_material}' non trovato nel database, "
-                    f"usato valore cautelativo di fallback di {CO2_FALLBACK_VALUE} kg CO\u2082/kg."
+                # ── STRICT MODE — MATERIALE ORIGINALE NON TROVATO ───────────
+                # Il materiale originale e' il dato base del calcolo LCA.
+                # Senza un match verificato (>= 0.85) il risultato sarebbe
+                # scientificamente invalido. Blocchiamo e notifichiamo l'utente.
+                _err = (
+                    f"⚠️ **Materiale originale non trovato nel DB LCA** (soglia: 0.85).\n\n"
+                    f"Il materiale **'{original_material}'** non e' presente nel dataset "
+                    f"ecoinvent per la geografia '{geography}' ne' nei proxy regionali "
+                    f"(RER, GLO, RoW). Il calcolo LCA non puo' procedere.\n\n"
+                    f"**Azioni possibili:**\n"
+                    f"- Specifica il materiale con il nome ecoinvent in inglese (es. 'steel', 'polypropylene').\n"
+                    f"- Cambia la geografia (es. 'GLO', 'RER', 'Europe').\n"
+                    f"- Il dataset non copre prodotti agricoli grezzi."
                 )
-                assumptions.append(_warn)
-                logger.warning(_warn)
-                thought_log.append(f"\u26a0 Fallback CO\u2082 applicato per '{original_material}': {CO2_FALLBACK_VALUE} kg CO\u2082/kg")
-                mat_impact = CO2_FALLBACK_VALUE
-                is_market = False
-                mat_energy = orig_comp.get("estimated_energy_mj", 50.0)
-                mat_cost = orig_comp.get("estimated_cost_per_kg", 1.0)
+                assumptions.append(
+                    f"ERRORE LCA CRITICO: '{original_material}' non trovato nel DB LCA (soglia 0.85) "
+                    f"per '{geography}'. Calcolo interrotto."
+                )
+                logger.error(
+                    "STRICT MODE: materiale originale '%s' non trovato per '%s'. Interrompo LCA.",
+                    original_material, geography,
+                )
+                thought_log.append(
+                    f"🚫 STRICT LCA FAIL: '{original_material}' @ '{geography}' "
+                    f"-> nessun match >= 0.85. LCA bloccata."
+                )
+                return {
+                    "pending_feedback": _err,
+                    "thought_log": thought_log,
+                    "assumptions_list": assumptions,
+                    "current_phase": "error",
+                    "error_message": (
+                        f"LCA aborted: original material '{original_material}' "
+                        f"not found in DB for '{geography}'"
+                    ),
+                }
             else:
                 loc_found = orig_match.get("location", "")
                 if (
@@ -232,18 +256,24 @@ async def lca_validator(state: AgentState) -> dict:
                 alt_match = provider.find_closest_match(alt_name, location=geography)
 
                 if not alt_match:
-                    # ── FALLBACK CAUTELATIVO ──────────────────────────────────
-                    _warn_alt = (
-                        f"ATTENZIONE: Materiale '{alt_name}' non trovato nel database, "
-                        f"usato valore cautelativo di fallback di {CO2_FALLBACK_VALUE} kg CO\u2082/kg."
+                    # ── STRICT MODE — ALTERNATIVA NON TROVATA ──────────────
+                    # Non e' un errore critico (l'originale esiste), ma
+                    # l'alternativa non puo' essere confrontata con valori
+                    # CO2 inventati. La saltiamo e passiamo alla successiva.
+                    _skip_note = (
+                        f"Alternativa '{alt_name}' non trovata nel DB LCA (soglia 0.85) "
+                        f"per '{geography}'. Esclusa dal confronto MCDA."
                     )
-                    assumptions.append(_warn_alt)
-                    logger.warning(_warn_alt)
-                    thought_log.append(f"\u26a0 Fallback CO\u2082 applicato per alternativa '{alt_name}': {CO2_FALLBACK_VALUE} kg CO\u2082/kg")
-                    alt_mat_impact = CO2_FALLBACK_VALUE
-                    alt_is_market = False
-                    alt_energy = alt.get("estimated_energy_mj", 50.0)
-                    alt_cost = alt.get("estimated_cost_per_kg", 1.0)
+                    assumptions.append(_skip_note)
+                    logger.warning(
+                        "STRICT MODE: alternativa '%s' non trovata per '%s'. Saltata.",
+                        alt_name, geography,
+                    )
+                    thought_log.append(
+                        f"⚠ STRICT: alternativa '{alt_name}' @ '{geography}' "
+                        f"-> nessun match >= 0.85. Saltata."
+                    )
+                    continue  # Passa all'alternativa successiva senza usare dati casuali
                 else:
                     loc_found_alt = alt_match.get("location", "")
                     if (

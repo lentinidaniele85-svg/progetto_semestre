@@ -191,7 +191,7 @@ class CSVLcaClient(LCADataProvider):
         self,
         label: str,
         location: Optional[str] = None,
-        threshold: float = 0.5,
+        threshold: float = 0.85,
     ) -> Optional[dict]:
         """Find the closest matching material using substring + difflib search.
 
@@ -236,14 +236,9 @@ class CSVLcaClient(LCADataProvider):
                 result = self._build_result(row, location_fallback_used)
                 break
 
-        # If even the full fallback chain failed, try completely without
-        # location filter as a last resort.
-        if result is None and canonical_loc:
-            row = self._search_in_location(label_lower, "", threshold)
-            if row is not None:
-                location_fallback_used = True
-                result = self._build_result(row, location_fallback_used)
-
+        # STRICT MODE: if the full geographic fallback chain failed, do NOT
+        # search globally without a location filter. Return None so callers
+        # can report "Material Not Found" instead of returning unrelated data.
         self._match_cache[cache_key] = result
         return result
 
