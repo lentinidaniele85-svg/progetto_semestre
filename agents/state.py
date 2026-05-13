@@ -11,6 +11,8 @@ class AgentState(TypedDict, total=False):
     """
     user_input: str
     mode: Literal["auto", "interactive"]
+    target_product: str
+    target_geography: str
 
     # Fase corrente del grafo — usata per routing esplicito (T07)
     # Valori: "init" | "constraints" | "interview" | "workflow" |

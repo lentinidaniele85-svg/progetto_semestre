@@ -174,7 +174,8 @@ async def lca_validator(state: AgentState) -> dict:
             process_impact = PROCESS_IMPACTS.get(process_name, 1.0)
 
             # Impatto materiale originale
-            orig_match = provider.find_closest_match(original_material, location=geography)
+            thought_log.append(f"Termine tradotto: {original_material}")
+            orig_match = provider.find_closest_match(target_product=original_material, target_geography=geography)
 
             if not orig_match:
                 # ── STRICT MODE — MATERIALE ORIGINALE NON TROVATO ───────────
@@ -214,6 +215,11 @@ async def lca_validator(state: AgentState) -> dict:
                     ),
                 }
             else:
+                exact_str = "SI" if orig_match.get("exact_match_found") else "NO"
+                geo_used = orig_match.get("geo_level_used", "N/A")
+                thought_log.append(f"Match esatto trovato: {exact_str}")
+                thought_log.append(f"Livello geografico utilizzato: {geo_used}")
+
                 loc_found = orig_match.get("location", "")
                 if (
                     geography.lower() not in ["not specified", ""]
@@ -229,7 +235,6 @@ async def lca_validator(state: AgentState) -> dict:
 
                 idx = orig_match.get("index", "?")
                 provider_name = orig_match.get("providerName", "?")
-                loc_found = orig_match.get("location", "?")
                 val_co2 = orig_match.get("environmental_impact", "?")
                 thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
 
@@ -253,7 +258,8 @@ async def lca_validator(state: AgentState) -> dict:
             alt_results: list[dict] = []
             for alt in component_alts.get("alternatives", []):
                 alt_name = alt["name"]
-                alt_match = provider.find_closest_match(alt_name, location=geography)
+                thought_log.append(f"Termine tradotto: {alt_name}")
+                alt_match = provider.find_closest_match(target_product=alt_name, target_geography=geography)
 
                 if not alt_match:
                     # ── STRICT MODE — ALTERNATIVA NON TROVATA ──────────────
@@ -275,6 +281,11 @@ async def lca_validator(state: AgentState) -> dict:
                     )
                     continue  # Passa all'alternativa successiva senza usare dati casuali
                 else:
+                    exact_str = "SI" if alt_match.get("exact_match_found") else "NO"
+                    geo_used = alt_match.get("geo_level_used", "N/A")
+                    thought_log.append(f"Match esatto trovato: {exact_str}")
+                    thought_log.append(f"Livello geografico utilizzato: {geo_used}")
+
                     loc_found_alt = alt_match.get("location", "")
                     if (
                         geography.lower() not in ["not specified", ""]
@@ -290,7 +301,6 @@ async def lca_validator(state: AgentState) -> dict:
 
                     idx_alt = alt_match.get("index", "?")
                     provider_name_alt = alt_match.get("providerName", "?")
-                    loc_found_alt = alt_match.get("location", "?")
                     val_co2_alt = alt_match.get("environmental_impact", "?")
                     thought_log.append(f"Riga Excel trovata: {idx_alt} - {provider_name_alt} - {loc_found_alt} - {val_co2_alt}")
 
