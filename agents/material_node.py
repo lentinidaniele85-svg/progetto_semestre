@@ -22,7 +22,7 @@ async def material_ideator(state: AgentState) -> dict:
         constraints=json.dumps(constraints),
     )
     
-user_prompt = f"""
+    user_prompt = f"""
 Product Description: {state.get("user_input", "")}
 Constraints: {json.dumps(constraints)}
 Approved BOM: {json.dumps(bom)}
