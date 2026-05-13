@@ -22,7 +22,7 @@ async def material_ideator(state: AgentState) -> dict:
         constraints=json.dumps(constraints),
     )
     
-user_prompt = f"""
+    user_prompt = f"""
 Product Description: {state.get("user_input", "")}
 Constraints: {json.dumps(constraints)}
 Approved BOM: {json.dumps(bom)}
@@ -49,7 +49,8 @@ It is STRICTLY FORBIDDEN to suggest "Cardboard", "Paper/Board", or wood to repla
         return {
             "semantic_alternatives": semantic_alternatives,
             "thought_log": thought_log,
-            "current_lca_step": 5,  # Step 5 (Material ideation completed, ready for LCA)
+            "current_lca_step": 5,          # Step 5 (Material ideation completed, ready for LCA)
+            "current_phase": "material",    # T07: routing esplicito → route_after_material → lca_validator
         }
 
     except Exception as exc:
