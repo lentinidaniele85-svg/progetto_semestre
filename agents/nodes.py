@@ -177,7 +177,7 @@ async def lca_validator(state: AgentState) -> dict:
             thought_log.append(f"Termine tradotto: {original_material}")
             orig_match = provider.find_closest_match(target_product=original_material, target_geography=geography)
 
-            if not orig_match:
+            if not orig_match or orig_match.get("environmental_impact") is None:
                 # ── STRICT MODE — MATERIALE ORIGINALE NON TROVATO ───────────
                 # Il materiale originale e' il dato base del calcolo LCA.
                 # Senza un match verificato (>= 0.85) il risultato sarebbe
@@ -209,10 +209,7 @@ async def lca_validator(state: AgentState) -> dict:
                     "thought_log": thought_log,
                     "assumptions_list": assumptions,
                     "current_phase": "error",
-                    "error_message": (
-                        f"LCA aborted: original material '{original_material}' "
-                        f"not found in DB for '{geography}'"
-                    ),
+                    "error_message": _err,
                 }
             else:
                 exact_str = "SI" if orig_match.get("exact_match_found") else "NO"
@@ -261,7 +258,7 @@ async def lca_validator(state: AgentState) -> dict:
                 thought_log.append(f"Termine tradotto: {alt_name}")
                 alt_match = provider.find_closest_match(target_product=alt_name, target_geography=geography)
 
-                if not alt_match:
+                if not alt_match or alt_match.get("environmental_impact") is None:
                     # ── STRICT MODE — ALTERNATIVA NON TROVATA ──────────────
                     # Non e' un errore critico (l'originale esiste), ma
                     # l'alternativa non puo' essere confrontata con valori

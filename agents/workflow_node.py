@@ -8,6 +8,13 @@ from data.provider_factory import get_lca_provider
 from agents.schemas import WorkflowAndBOMResponse
 from agents.nodes import _invoke_structured
 import asyncio
+import unicodedata
+
+def normalize_text(text: str) -> str:
+    """Rimuove accenti e normalizza la stringa (es. 'Perù' -> 'Peru')."""
+    if not text:
+        return ""
+    return ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn').strip()
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +58,8 @@ ASSUMPTION-FIRST RULES (mandatory):
 - If material is missing → choose the most plausible one by technical exclusion (Step 3)
   and record the assumption.
 - If geography is missing → default to RER (Europe) or GLO and record the assumption.
+- HARD LOCK GEOGRAPHY: If the user specifies a geography/nation (e.g., 'in Perù'), it is a PRIMARY CONSTRAINT. You MUST extract it, translate it to English, and NEVER declare it 'not specified'.
+- You MUST translate BOTH the extracted material name and the geography into English.
 - NEVER leave fields at zero or undefined when an assumption can fill them.
 
 ALWAYS ensure:
@@ -74,20 +83,29 @@ ALWAYS ensure:
         provider = get_lca_provider()
         
         raw_geography = result.geography or "Not specified"
+        raw_geography = normalize_text(raw_geography)
+        
         GEO_MAPPING = {
-            "europa": "RER",
-            "europe": "RER",
-            "mondo": "GLO",
-            "globale": "GLO",
-            "world": "GLO",
-            "global": "GLO",
+            "europa": "Europe without Switzerland",
+            "europe": "Europe without Switzerland",
+            "rer": "Europe without Switzerland",
+            "mondo": "Global",
+            "globale": "Global",
+            "world": "Global",
+            "global": "Global",
+            "glo": "Global",
+            "row": "Rest-of-World",
+            "rest of world": "Rest-of-World",
+            "resto del mondo": "Rest-of-World",
             "stati uniti": "United States of America",
             "usa": "United States of America",
             "united states": "United States of America",
             "cina": "China",
             "china": "China"
         }
-        geography = GEO_MAPPING.get(raw_geography.lower(), raw_geography)
+        
+        mapped_geo = GEO_MAPPING.get(raw_geography.lower())
+        geography = mapped_geo if mapped_geo else raw_geography.title()
 
         is_interview_complete = result.is_interview_complete
 
@@ -141,11 +159,13 @@ ALWAYS ensure:
         for comp_data in result.components or []:
             comp = comp_data.model_dump()
             mat = comp.get("material", "unknown")
+            mat = normalize_text(mat)
+            comp["material"] = mat
 
             # 1. Fuzzy Match del materiale nel DataSet.xlsx
             best_match = provider.find_closest_match(mat, location=geography)
 
-            if not best_match:
+            if not best_match or best_match.get("environmental_impact") is None:
                 # ── STRICT MODE — MATERIAL NOT FOUND ─────────────────────────
                 # Il materiale non è presente nel DB con sufficiente confidenza
                 # (threshold > 0.85) nella catena geografica [location → RER → GLO → RoW].
@@ -172,7 +192,7 @@ ALWAYS ensure:
                     "assumptions_list": assumptions,
                     "current_lca_step": 2,
                     "current_phase": "error",
-                    "error_message": f"Material not found: '{mat}' for geography '{geography}'",
+                    "error_message": error_msg,
                 }
             else:
                 loc_found = best_match.get("location", "")

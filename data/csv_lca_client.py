@@ -18,42 +18,42 @@ DEFAULT_DATA_PATH = Path(__file__).parent / "DataSet.xlsx"
 #   3. GLO  – Global
 #   4. RoW  – Rest of World (last resort)
 #
-GEOGRAPHIC_FALLBACK_CHAIN: List[str] = ["RER", "GLO", "RoW"]
+GEOGRAPHIC_FALLBACK_CHAIN: List[str] = ["Europe without Switzerland", "Global", "Rest-of-World"]
 
 # Normalisation map: user-facing strings → canonical dataset codes/names
 _LOCATION_NORMALISE: dict[str, str] = {
     # Italian names
-    "italia":               "IT",
-    "italy":                "IT",
-    "cina":                 "CN",
-    "china":                "CN",
-    "stati uniti":          "US",
-    "usa":                  "US",
-    "united states":        "US",
-    "united states of america": "US",
-    "germania":             "DE",
-    "germany":              "DE",
-    "francia":              "FR",
-    "france":               "FR",
-    "spagna":               "ES",
-    "spain":                "ES",
-    "regno unito":          "GB",
-    "uk":                   "GB",
-    "united kingdom":       "GB",
-    "svizzera":             "CH",
-    "switzerland":          "CH",
+    "italia":               "Italy",
+    "italy":                "Italy",
+    "cina":                 "China",
+    "china":                "China",
+    "stati uniti":          "United States of America",
+    "usa":                  "United States of America",
+    "united states":        "United States of America",
+    "united states of america": "United States of America",
+    "germania":             "Germany",
+    "germany":              "Germany",
+    "francia":              "France",
+    "france":               "France",
+    "spagna":               "Spain",
+    "spain":                "Spain",
+    "regno unito":          "United Kingdom",
+    "uk":                   "United Kingdom",
+    "united kingdom":       "United Kingdom",
+    "svizzera":             "Switzerland",
+    "switzerland":          "Switzerland",
     # Regional / global aliases
-    "europa":               "RER",
-    "europe":               "RER",
-    "rer":                  "RER",
-    "mondo":                "GLO",
-    "world":                "GLO",
-    "globale":              "GLO",
-    "global":               "GLO",
-    "glo":                  "GLO",
-    "row":                  "RoW",
-    "rest of world":        "RoW",
-    "resto del mondo":      "RoW",
+    "europa":               "Europe without Switzerland",
+    "europe":               "Europe without Switzerland",
+    "rer":                  "Europe without Switzerland",
+    "mondo":                "Global",
+    "world":                "Global",
+    "globale":              "Global",
+    "global":               "Global",
+    "glo":                  "Global",
+    "row":                  "Rest-of-World",
+    "rest of world":        "Rest-of-World",
+    "resto del mondo":      "Rest-of-World",
 }
 
 # Category-level energy (MJ/kg) and cost (€/kg) defaults used when the
@@ -98,25 +98,29 @@ def _normalise_location(raw: Optional[str]) -> str:
     return _LOCATION_NORMALISE.get(raw.strip().lower(), raw.strip())
 
 
-def _get_fallback_chain(canonical_location: str) -> List[str]:
-    """Build the ordered list of locations to try after the primary one fails.
+_EUROPEAN_CODES = {
+    "Italy", "Germany", "France", "Spain", "United Kingdom", "Switzerland", 
+    "Europe without Switzerland", "Europe"
+}
 
-    For a specific country code (e.g. "IT") the chain is:
-        ["IT", "RER", "GLO", "RoW"]
+def _get_regional_bin(canonical_location: str) -> List[str]:
+    """Return the allowed regional fallback bin based on the initial location."""
+    loc = canonical_location.strip() if canonical_location else ""
+    # Use case-insensitive check for European codes or exact string matches
+    if not loc or loc.lower() in ("global", "rest-of-world", "glo", "row"):
+        return ["Global", "Rest-of-World"]
+    if any(loc.lower() == ec.lower() for ec in _EUROPEAN_CODES):
+        return ["Europe without Switzerland"]
+    return ["Global", "Rest-of-World"]
 
-    For a regional code already in the chain (e.g. "RER") the chain starts
-    from that point onward:
-        ["RER", "GLO", "RoW"]
-
-    For an empty / already-global location the chain is just ["GLO", "RoW"].
-    """
-    loc = canonical_location.upper() if canonical_location else ""
-    if loc in ("GLO", "ROW", ""):
-        return [canonical_location] if canonical_location else ["GLO", "RoW"]
-    if loc == "RER":
-        return ["RER", "GLO", "RoW"]
-    # Specific country → full chain
-    return [canonical_location] + GEOGRAPHIC_FALLBACK_CHAIN
+def _get_geometry(name: str) -> Optional[str]:
+    """Extract geometry keyword from a material name."""
+    name = name.lower()
+    if any(k in name for k in ["block", "blocco"]): return "block"
+    if any(k in name for k in ["slab", "board", "lastra", "pannello"]): return "slab"
+    if any(k in name for k in ["tile", "piastrella"]): return "tile"
+    if any(k in name for k in ["brick", "mattone"]): return "brick"
+    return None
 
 
 
@@ -194,52 +198,63 @@ class CSVLcaClient(LCADataProvider):
         location: Optional[str] = None,
         threshold: float = 0.85,
     ) -> Optional[dict]:
-        """Find the closest matching material using substring + difflib search.
-
-        Parameters
-        ----------
-        label:
-            Material name to search for.
-        location:
-            Optional location hint (country name, ISO code, or region code).
-            Supports Italian names and common aliases; mapped internally to
-            canonical dataset codes via ``_normalise_location``.
-        threshold:
-            Minimum difflib similarity score (0–1).
-
-        Returns
-        -------
-        dict or None
-            Match record including ``location_fallback_used`` flag.
-            ``location_fallback_used`` is *True* when the result comes from a
-            broader geographic scope than the one originally requested.
+        """Find the closest matching material using hierarchical strict search.
+        
+        FASE A: Exact Match
+        Step 1: Local
+        Step 2: Regional Bin
+        
+        FASE B: Fuzzy Match (0.85)
+        Step 3: Fuzzy Local (with geometry constraint)
+        Step 4: Fuzzy Regional (with geometry constraint)
+        
+        FASE C: Hard Stop
         """
         label_lower = label.lower().strip()
         canonical_loc = _normalise_location(location)
 
-        cache_key = f"{label_lower}__{canonical_loc}"
+        cache_key = f"{label_lower}__{canonical_loc}_strict"
         if cache_key in self._match_cache:
             return self._match_cache[cache_key]
 
         if self._df.empty:
             return None
 
-        # Build the ordered list of locations to try
-        chain = _get_fallback_chain(canonical_loc) if canonical_loc else [""]
+        # Determine the correct geographic bin
+        regional_bins = _get_regional_bin(canonical_loc)
 
         result: Optional[dict] = None
-        location_fallback_used = False
-
-        for attempt_idx, attempt_loc in enumerate(chain):
-            row = self._search_in_location(label_lower, attempt_loc, threshold)
+        
+        # FASE A: Ricerca Prodotto Esatto (Match 1.0)
+        # Step 1 (Locale): exact match in requested geography
+        row = self._search_exact(label_lower, canonical_loc)
+        if row is not None:
+            result = self._build_result(row, location_fallback_used=False)
+            
+        # Step 2 (Binario Regionale): exact match in regional bin
+        if result is None:
+            for r_bin in regional_bins:
+                row = self._search_exact(label_lower, r_bin)
+                if row is not None:
+                    result = self._build_result(row, location_fallback_used=True)
+                    break
+                    
+        # FASE B: Ricerca Prodotto Simile (Fuzzy Match 0.85)
+        if result is None:
+            # Step 3 (Fuzzy Locale): fuzzy match in requested geography
+            row = self._search_fuzzy(label_lower, canonical_loc, threshold)
             if row is not None:
-                location_fallback_used = attempt_idx > 0
-                result = self._build_result(row, location_fallback_used)
-                break
+                result = self._build_result(row, location_fallback_used=False)
+                
+            # Step 4 (Fuzzy Regionale): fuzzy match in regional bin
+            if result is None:
+                for r_bin in regional_bins:
+                    row = self._search_fuzzy(label_lower, r_bin, threshold)
+                    if row is not None:
+                        result = self._build_result(row, location_fallback_used=True)
+                        break
 
-        # STRICT MODE: if the full geographic fallback chain failed, do NOT
-        # search globally without a location filter. Return None so callers
-        # can report "Material Not Found" instead of returning unrelated data.
+        # FASE C: Hard Stop - Se non trovato, ritorna None
         self._match_cache[cache_key] = result
         return result
 
@@ -247,63 +262,60 @@ class CSVLcaClient(LCADataProvider):
     # Internal search helpers
     # ------------------------------------------------------------------
 
-    def _search_in_location(
-        self, label_lower: str, loc: str, threshold: float
-    ) -> Optional[pd.Series]:
-        """Return the best-matching DataFrame row for *label_lower* within *loc*.
-
-        Parameters
-        ----------
-        loc:
-            Canonical location string. Empty string → search without filter.
-        """
+    def _get_location_subset(self, loc: str) -> pd.DataFrame:
         df_search = self._df
-
         if loc:
-            # Try exact match first, then partial/case-insensitive
             mask_exact = df_search["location"].str.upper() == loc.upper()
             if mask_exact.any():
-                df_search = df_search[mask_exact]
-            else:
-                mask_partial = df_search["location"].str.contains(
-                    loc, case=False, na=False, regex=False
-                )
-                if not mask_partial.any():
-                    return None  # location not in dataset at all
-                df_search = df_search[mask_partial]
+                return df_search[mask_exact]
+            mask_partial = df_search["location"].str.contains(loc, case=False, na=False, regex=False)
+            if mask_partial.any():
+                return df_search[mask_partial]
+            # If location not in dataset at all, return empty dataframe
+            return df_search.iloc[0:0] 
+        return df_search
 
-        # --- Substring match (preferred) ---
-        mask_sub = df_search["_flowname_lower"].str.contains(
-            label_lower, regex=False, na=False
-        )
+    def _search_exact(self, label_lower: str, loc: str) -> Optional[pd.Series]:
+        """Return the best-matching DataFrame row for an exact substring match."""
+        df_search = self._get_location_subset(loc)
+        if df_search.empty:
+            return None
+
+        mask_sub = df_search["_flowname_lower"].str.contains(label_lower, regex=False, na=False)
         subset = df_search[mask_sub]
 
         if not subset.empty:
-            # Prefer "market for …" processes (more representative in ecoinvent)
-            market = subset[
-                subset["processname"].str.contains("market for", case=False, na=False)
-            ]
+            market = subset[subset["processname"].str.contains("market for", case=False, na=False)]
             if not market.empty:
                 subset = market
-            # Among candidates pick shortest name (most specific match)
             unique_names = subset["_flowname_lower"].unique()
             best = min(unique_names, key=len)
             return subset[subset["_flowname_lower"] == best].iloc[0]
+            
+        return None
 
-        # --- Difflib fuzzy match (fallback within location, threshold=0.85) ---
-        unique_names = df_search["_flowname_lower"].unique()
-        matches = difflib.get_close_matches(
-            label_lower, unique_names, n=1, cutoff=threshold
-        )
-        if not matches:
+    def _search_fuzzy(self, label_lower: str, loc: str, threshold: float) -> Optional[pd.Series]:
+        """Return the best-matching DataFrame row for a fuzzy match with geometry constraint."""
+        df_search = self._get_location_subset(loc)
+        if df_search.empty:
             return None
 
-        best = matches[0]
-        match_rows = df_search[df_search["_flowname_lower"] == best]
-        market_rows = match_rows[
-            match_rows["processname"].str.contains("market for", case=False, na=False)
-        ]
-        return market_rows.iloc[0] if not market_rows.empty else match_rows.iloc[0]
+        unique_names = df_search["_flowname_lower"].unique()
+        matches = difflib.get_close_matches(label_lower, unique_names, n=10, cutoff=threshold)
+        
+        orig_geom = _get_geometry(label_lower)
+        
+        for match in matches:
+            match_geom = _get_geometry(match)
+            # VINCOLO GEOMETRIA: scarta se le geometrie sono diverse o se una manca e l'altra no
+            if orig_geom != match_geom:
+                continue
+
+            match_rows = df_search[df_search["_flowname_lower"] == match]
+            market_rows = match_rows[match_rows["processname"].str.contains("market for", case=False, na=False)]
+            return market_rows.iloc[0] if not market_rows.empty else match_rows.iloc[0]
+            
+        return None
 
     def _build_result(self, row: pd.Series, location_fallback_used: bool) -> dict:
         """Construct the result dict from a matched DataFrame row."""
