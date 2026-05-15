@@ -99,6 +99,10 @@ def constraint_extractor(state: AgentState) -> dict:
                 "(Dimensions, Mechanical Load, Usage Environment, Target Lifespan) "
                 "from the product description, along with budget, aesthetics, "
                 "structural requirements, and weight limit. "
+                "CRITICAL RULE: If the input is a Pure Material with a quantity or location (e.g., '1 kg of polypropylene in Europe'), "
+                "you MUST extract the exact weight (e.g., 1.0) into the 'mass' field, and the location into 'geography'. "
+                "Also determine 'task_type'. If the user asks to model or calculate impact (e.g. 'Voglio modellare...', 'Qual è l'impatto di...'), set it to 'modeling'. "
+                "If the user asks to optimize, improve or find sustainable alternatives (e.g. 'Ottimizza...', 'Migliora...', 'Trova alternative...'), set it to 'optimization'. "
                 "Return ONLY the fields explicitly stated or strongly implied. RESPOND EXCLUSIVELY IN ENGLISH."
             )
         ),
@@ -155,18 +159,17 @@ async def lca_validator(state: AgentState) -> dict:
         assumptions = list(state.get("assumptions_list", []))
 
         logistics = state.get("logistics_data", {})
-        tkm = logistics.get("tkm", 0.0)
+        dist_km = logistics.get("distance_km", 500.0)
         geography = logistics.get("geography", "GLO")
 
-        for component_alts in state.get("semantic_alternatives", []):
-            component_name: str = component_alts["component_name"]
-
-            orig_comp = next(
-                (c for c in state.get("bom", []) if c["name"] == component_name),
-                None
+        for orig_comp in (state.get("bom") or []):
+            component_name = orig_comp.get("name", "")
+            
+            # Find alternatives for this component, if any (empty in 'modeling' mode)
+            component_alts = next(
+                (alts for alts in (state.get("semantic_alternatives") or []) if alts.get("component_name") == component_name),
+                {}
             )
-            if not orig_comp:
-                continue
 
             original_material = orig_comp["material"]
             mass_kg = orig_comp.get("weight_kg", 1.0)
@@ -182,15 +185,20 @@ async def lca_validator(state: AgentState) -> dict:
                 # Il materiale originale e' il dato base del calcolo LCA.
                 # Senza un match verificato (>= 0.85) il risultato sarebbe
                 # scientificamente invalido. Blocchiamo e notifichiamo l'utente.
+                display_geo = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(geography.lower(), geography.title())
+                suggested_alt = {"marble": "natural stone o concrete", "carbon fiber": "glass fiber o generic composite", "bamboo": "wood o generic biomass", "hemp": "natural fiber o flax", "kevlar": "aramid fiber", "titanium": "stainless steel o aluminum alloy"}.get(original_material.lower(), "una categoria superiore (es. 'natural stone' o 'concrete')")
+
                 _err = (
                     f"⚠️ **Materiale originale non trovato nel DB LCA** (soglia: 0.85).\n\n"
-                    f"Il materiale **'{original_material}'** non e' presente nel dataset "
-                    f"ecoinvent per la geografia '{geography}' ne' nei proxy regionali "
-                    f"(RER, GLO, RoW). Il calcolo LCA non puo' procedere.\n\n"
-                    f"**Azioni possibili:**\n"
-                    f"- Specifica il materiale con il nome ecoinvent in inglese (es. 'steel', 'polypropylene').\n"
-                    f"- Cambia la geografia (es. 'GLO', 'RER', 'Europe').\n"
-                    f"- Il dataset non copre prodotti agricoli grezzi."
+                    f"Il materiale **'{original_material}'** non è presente nel dataset "
+                    f"ecoinvent per la geografia **'{display_geo}'** né nei proxy regionali "
+                    f"(RER, GLO, RoW).\n\n"
+                    f"Questo blocco è necessario per garantire che i calcoli di sostenibilità siano basati su dati certificati e non su stime incerte.\n\n"
+                    f"**Suggerimenti per la risoluzione:**\n"
+                    f"- Prova a cercare con {suggested_alt}.\n"
+                    f"- Specifica il materiale con un nome più generico in inglese (es. 'polypropylene', 'steel').\n"
+                    f"- Cambia l'area geografica (es. 'Global', 'Europe').\n"
+                    f"- Nota: il dataset potrebbe non coprire prodotti agricoli o grezzi molto specifici."
                 )
                 assumptions.append(
                     f"ERRORE LCA CRITICO: '{original_material}' non trovato nel DB LCA (soglia 0.85) "
@@ -240,8 +248,9 @@ async def lca_validator(state: AgentState) -> dict:
                 mat_energy = orig_match.get("energy_mj") or orig_comp.get("estimated_energy_mj", 50.0)
                 mat_cost = orig_match.get("cost_per_kg") or orig_comp.get("estimated_cost_per_kg", 1.0)
 
+            tkm = (mass_kg / 1000.0) * dist_km
             transport_impact = 0.0 if is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
-            total_orig_impact = (mat_impact + process_impact + transport_impact) * mass_kg
+            total_orig_impact = (mat_impact + process_impact) * mass_kg + transport_impact
 
             orig_scores = {
                 "environmental_impact": total_orig_impact,
@@ -307,7 +316,7 @@ async def lca_validator(state: AgentState) -> dict:
                     alt_cost = alt_match.get("cost_per_kg") or alt.get("estimated_cost_per_kg", 1.0)
 
                 alt_transport = 0.0 if alt_is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
-                total_alt_impact = (alt_mat_impact + process_impact + alt_transport) * mass_kg
+                total_alt_impact = (alt_mat_impact + process_impact) * mass_kg + alt_transport
 
                 scores = {
                     "environmental_impact": total_alt_impact,
@@ -334,12 +343,15 @@ async def lca_validator(state: AgentState) -> dict:
                 "alternatives": alt_results,
             })
 
+        task_type = (state.get("constraints") or {}).get("task_type", "optimization")
+        current_phase = "complete" if task_type == "modeling" else "lca"
+        
         return {
             "lca_results": lca_results,
             "thought_log": thought_log,
             "assumptions_list": assumptions,
-            "current_lca_step": 6,          # Step 6
-            "current_phase": "lca",         # T07: fase esplicita
+            "current_lca_step": 7 if task_type == "modeling" else 6,
+            "current_phase": current_phase,
         }
     except Exception as exc:
         logger.error(f"LCA Validator failed: {exc}")

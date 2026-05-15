@@ -9,12 +9,12 @@ logger = logging.getLogger(__name__)
 
 def generate_html_report(state: dict) -> str:
     """Return a self-contained HTML string from a completed AgentState dict."""
-    user_input = state.get("user_input", "N/A")
-    bom: list[dict] = state.get("bom", [])
-    lca_results: list[dict] = state.get("lca_results", [])
-    mcda_scores: list[dict] = state.get("mcda_scores", [])
-    workflow_steps: list[dict] = state.get("workflow_steps", [])
-    assumptions_list: list[str] = state.get("assumptions_list", [])
+    user_input = state.get("user_input") or "N/A"
+    bom: list[dict] = state.get("bom") or []
+    lca_results: list[dict] = state.get("lca_results") or []
+    mcda_scores: list[dict] = state.get("mcda_scores") or []
+    workflow_steps: list[dict] = state.get("workflow_steps") or []
+    assumptions_list: list[str] = state.get("assumptions_list") or []
     generated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     ita = False
@@ -23,7 +23,12 @@ def generate_html_report(state: dict) -> str:
     if len(words.intersection(ita_words)) > 0:
         ita = True
 
-    t_report = "Report di Ottimizzazione Sostenibile" if ita else "Sustainable Product Optimization Report"
+    task_type = (state.get("constraints") or {}).get("task_type", "optimization")
+    
+    if task_type == "modeling":
+        t_report = "Report di Analisi Impatto LCA" if ita else "LCA Impact Analysis Report"
+    else:
+        t_report = "Report di Ottimizzazione Sostenibile" if ita else "Sustainable Product Optimization Report"
     t_generated = "Generato il" if ita else "Generated"
     t_powered = "Powered by LangGraph & LCA data" if ita else "Powered by LangGraph & LCA data"
     t_bom = "Distinta Base Originale (BOM)" if ita else "Original Bill of Materials"
@@ -116,13 +121,79 @@ def generate_html_report(state: dict) -> str:
         return rows
 
     def _assumptions_list() -> str:
-        if not assumptions_list:
+        unique_assumptions = list(dict.fromkeys(assumptions_list))
+        filtered_assumptions = [
+            a for a in unique_assumptions
+            if "nessuna assunzione" not in a.lower() and "no assumption" not in a.lower()
+        ]
+        if not filtered_assumptions:
             return "<p>Nessun dato esterno o assunzione aggiuntiva trovata.</p>"
         html = "<ul>"
-        for a in assumptions_list:
+        for a in filtered_assumptions:
             html += f"<li>{a}</li>"
         html += "</ul>"
         return html
+
+    if task_type == "modeling":
+        opt_html = f"""
+<h2>&#127757; {t_co2_impact}</h2>
+<div class="cards">
+  <div class="card orig" style="flex: unset; width: 300px;">
+    <div class="label">{t_orig_co2}</div>
+    <div class="value">{total_orig:.3f}</div>
+    <div class="label">kg CO&#8322;-eq</div>
+  </div>
+</div>
+"""
+    else:
+        opt_html = f"""
+<h2>&#128300; {t_opt_sum}</h2>
+<table>
+  <thead>
+    <tr>
+      <th>{t_comp}</th>
+      <th>{t_orig_mat}</th>
+      <th>{t_rec_alt}</th>
+      <th>{t_co2_red}</th>
+      <th>MCDA Score</th>
+      <th>{t_just}</th>
+    </tr>
+  </thead>
+  <tbody>{_opt_rows()}</tbody>
+</table>
+
+<h2>&#127757; {t_co2_impact}</h2>
+<div class="cards">
+  <div class="card orig">
+    <div class="label">{t_orig_co2}</div>
+    <div class="value">{total_orig:.3f}</div>
+    <div class="label">kg CO&#8322;-eq</div>
+  </div>
+  <div class="card opt">
+    <div class="label">{t_opt_co2}</div>
+    <div class="value">{total_opt:.3f}</div>
+    <div class="label">kg CO&#8322;-eq</div>
+  </div>
+  <div class="card delta">
+    <div class="label">{t_red_over}</div>
+    <div class="value">{reduction_pct:.1f}%</div>
+    <div class="label">{t_improv}</div>
+  </div>
+</div>
+
+<h3 style="margin-top:32px;color:#0f3460">{t_break}</h3>
+<table>
+  <thead>
+    <tr>
+      <th>{t_comp}</th>
+      <th>{t_orig_co2_kg}</th>
+      <th>{t_opt_co2_kg}</th>
+      <th>{t_red}</th>
+    </tr>
+  </thead>
+  <tbody>{_impact_rows()}</tbody>
+</table>
+"""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -233,52 +304,7 @@ def generate_html_report(state: dict) -> str:
   <tbody>{_bom_rows()}</tbody>
 </table>
 
-<h2>&#128300; {t_opt_sum}</h2>
-<table>
-  <thead>
-    <tr>
-      <th>{t_comp}</th>
-      <th>{t_orig_mat}</th>
-      <th>{t_rec_alt}</th>
-      <th>{t_co2_red}</th>
-      <th>MCDA Score</th>
-      <th>{t_just}</th>
-    </tr>
-  </thead>
-  <tbody>{_opt_rows()}</tbody>
-</table>
-
-<h2>&#127757; {t_co2_impact}</h2>
-<div class="cards">
-  <div class="card orig">
-    <div class="label">{t_orig_co2}</div>
-    <div class="value">{total_orig:.3f}</div>
-    <div class="label">kg CO&#8322;-eq</div>
-  </div>
-  <div class="card opt">
-    <div class="label">{t_opt_co2}</div>
-    <div class="value">{total_opt:.3f}</div>
-    <div class="label">kg CO&#8322;-eq</div>
-  </div>
-  <div class="card delta">
-    <div class="label">{t_red_over}</div>
-    <div class="value">{reduction_pct:.1f}%</div>
-    <div class="label">{t_improv}</div>
-  </div>
-</div>
-
-<h3 style="margin-top:32px;color:#0f3460">{t_break}</h3>
-<table>
-  <thead>
-    <tr>
-      <th>{t_comp}</th>
-      <th>{t_orig_co2_kg}</th>
-      <th>{t_opt_co2_kg}</th>
-      <th>{t_red}</th>
-    </tr>
-  </thead>
-  <tbody>{_impact_rows()}</tbody>
-</table>
+{opt_html}
 
 <h2>&#128736;&#65039; {t_workflow}</h2>
 <table>

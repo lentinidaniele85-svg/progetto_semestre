@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 
 
@@ -7,11 +7,14 @@ class ConstraintsExtract(BaseModel):
     aesthetics: Optional[str] = None
     structural_requirements: Optional[str] = None
     weight_limit_kg: Optional[float] = None
+    mass: Optional[float] = Field(default=None, description="Massa o peso esplicito in kg (es. '1 kg', '5kg'). Da usare assolutamente se l'input specifica una quantità.")
+    geography: Optional[str] = Field(default=None, description="Area geografica o nazione (es. 'Europa', 'Italia', 'Perù'). Da estrarre se esplicitata nell'input.")
     recyclability_required: Optional[bool] = None
     dimensions: Optional[str] = Field(default=None, description="Dimensioni del prodotto (es. 50x50x90cm). 1 dei 4 Pilastri.")
     mechanical_load: Optional[str] = Field(default=None, description="Carico meccanico o peso da sostenere. 1 dei 4 Pilastri.")
     usage_environment: Optional[str] = Field(default=None, description="Ambiente d'uso (es. indoor, outdoor, umido). 1 dei 4 Pilastri.")
     target_lifespan: Optional[str] = Field(default=None, description="Durata o vita utile attesa. 1 dei 4 Pilastri.")
+    task_type: Literal["modeling", "optimization"] = Field(default="optimization", description="Tipo di task: 'modeling' (solo calcolo, niente MCDA) oppure 'optimization' (ricerca materiali migliori)")
 
 
 class BOMComponent(BaseModel):

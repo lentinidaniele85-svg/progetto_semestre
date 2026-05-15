@@ -263,10 +263,11 @@ def _process_agent_run(user_input: str, is_feedback: bool = False) -> None:
         _add_message("assistant", msg)
         st.session_state.awaiting_approval = None
     else:
+        task_type = st.session_state.graph_state.get("constraints", {}).get("task_type", "optimization")
         if not is_feedback:
-            msg = "Analysis complete!"
+            msg = "Analysis complete!" if task_type == "modeling" else "Optimisation complete!"
         else:
-            msg = "Optimisation complete! Final MCDA scores and the best material recommendations are shown in the dashboard."
+            msg = "Analysis complete! Final report is shown in the dashboard." if task_type == "modeling" else "Optimisation complete! Final MCDA scores and the best material recommendations are shown in the dashboard."
         _add_message("assistant", msg)
         st.session_state.awaiting_approval = None
 
@@ -538,12 +539,18 @@ with right_col:
         # ── Assumptions ──────────────────────────────────────────────────────
         assumptions = state.get("assumptions_list", [])
         if assumptions:
-            st.markdown("**Assunzioni e Dati Esterni:**")
-            for a in assumptions:
-                if "fallback" in a.lower() or "3.5" in a:
-                    st.error(f"⚠️ Data fallback: {a}", icon="🔴")
-                else:
-                    st.warning(f"ℹ️ Assumption: {a}", icon="🟡")
+            unique_assumptions = list(dict.fromkeys(assumptions))
+            filtered_assumptions = [
+                a for a in unique_assumptions
+                if "nessuna assunzione" not in a.lower() and "no assumption" not in a.lower()
+            ]
+            if filtered_assumptions:
+                st.markdown("**Assunzioni e Dati Esterni:**")
+                for a in filtered_assumptions:
+                    if "fallback" in a.lower() or "3.5" in a:
+                        st.error(f"⚠️ Data fallback: {a}", icon="🔴")
+                    else:
+                        st.warning(f"ℹ️ Assumption: {a}", icon="🟡")
 
         # ── Thought Log — visible during early phases ─────────────────────
         if phase in ("constraints", "interview"):
@@ -602,8 +609,10 @@ with right_col:
 
         # ── Material Alternatives (phase >= material) ─────────────────────
         if _phase_gte(phase, "material"):
-            lca_results: list[dict] = state.get("lca_results", [])
-            mcda_scores: list[dict] = state.get("mcda_scores", [])
+            task_type = state.get("constraints", {}).get("task_type", "optimization")
+            if task_type != "modeling":
+                lca_results: list[dict] = state.get("lca_results", [])
+                mcda_scores: list[dict] = state.get("mcda_scores", [])
 
             if lca_results and not mcda_scores:
                 st.subheader("🔬 Material Alternatives (LCA Validated)")
@@ -671,7 +680,11 @@ with right_col:
         # ── Download buttons — ONLY when complete ────────────────────────
         if phase == "complete":
             st.divider()
-            st.success("✅ Optimisation complete! Download the full report below.")
+            task_type = state.get("constraints", {}).get("task_type", "optimization")
+            if task_type == "modeling":
+                st.success("✅ Analysis complete! Download the full report below.")
+            else:
+                st.success("✅ Optimisation complete! Download the full report below.")
 
             import hashlib, json
             _pdf_key         = "cached_pdf_bytes"

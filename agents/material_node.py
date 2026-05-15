@@ -34,6 +34,9 @@ Exclude any material not compatible with the user constraints.
 CRITICAL RULE FOR MATERIAL CATEGORY CONSISTENCY:
 You MUST respect the original Material Category. If the original material is a "Plastic/Polymer" (e.g. Polypropylene, PE, PET), the alternatives MUST be searched among bioplastics (e.g. PLA, PHA) or recycled plastics (e.g. rPP, rPET). 
 It is STRICTLY FORBIDDEN to suggest "Cardboard", "Paper/Board", or wood to replace a plastic polymer, unless explicitly requested by the user.
+
+CRITICAL RULE FOR OPTIMIZATION:
+When proposing alternatives, try to suggest the exact same material but with better environmental profiles (e.g., "recycled [material]", "secondary [material]", "low-carbon [material]") available in the same geographic region to ensure a 1:1 comparable baseline.
 """
 
     chain = llm.with_structured_output(MaterialIdeationResponse)

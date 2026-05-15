@@ -23,6 +23,9 @@ def route_after_feedback(state: AgentState) -> str:
     if phase == "error":
         return END
     if phase == "workflow":
+        task_type = (state.get("constraints") or {}).get("task_type", "optimization")
+        if task_type == "modeling":
+            return "lca_validator"
         return "material_ideator"
     return "workflow_bom_ideator"
 
@@ -37,6 +40,19 @@ def route_after_material(state: AgentState) -> str:
     if phase == "error":
         return END
     return "lca_validator"
+
+
+def route_after_lca(state: AgentState) -> str:
+    """Routing in uscita da lca_validator.
+    - Se modeling, salta mcda_scorer.
+    """
+    phase = state.get("current_phase", "lca")
+    if phase == "error":
+        return END
+    task_type = (state.get("constraints") or {}).get("task_type", "optimization")
+    if task_type == "modeling":
+        return END
+    return "mcda_scorer"
 
 def build_graph(mode: str = "interactive", checkpointer=None):
     """
@@ -71,6 +87,7 @@ def build_graph(mode: str = "interactive", checkpointer=None):
             END: END,
             "workflow_bom_ideator": "workflow_bom_ideator",
             "material_ideator": "material_ideator",
+            "lca_validator": "lca_validator",
         },
     )
 
@@ -89,7 +106,14 @@ def build_graph(mode: str = "interactive", checkpointer=None):
         },
     )
 
-    graph.add_edge("lca_validator", "mcda_scorer")
+    graph.add_conditional_edges(
+        "lca_validator",
+        route_after_lca,
+        {
+            END: END,
+            "mcda_scorer": "mcda_scorer",
+        },
+    )
     graph.add_edge("mcda_scorer", END)
 
     interrupts = ["human_feedback_processor"] if mode == "interactive" else []  # T08: unico interrupt

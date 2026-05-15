@@ -38,6 +38,12 @@ async def workflow_bom_ideator(state: AgentState) -> dict:
     # T05: Step 2 — Lookup Aggregato
     llm = ModelFactory.get_model()
     constraints = state.get("constraints", {})
+    
+    if constraints.get("mass") is not None or constraints.get("geography") is not None:
+        if ita:
+            thought_log.append("Utilizzo vincoli forniti dall'utente.")
+        else:
+            thought_log.append("Using user-provided constraints.")
 
     system_prompt = ModelFactory.get_system_prompt("semantic_ideation_api").format(
         user_input=state.get("user_input", ""),
@@ -53,19 +59,20 @@ Execute the 7 Steps defined in your System Prompt and provide a COMPLETE BOM Gen
 ASSUMPTION-FIRST RULES (mandatory):
 - ALWAYS set is_interview_complete=True and interview_questions=[] UNLESS the description
   is completely unintelligible (e.g. a single word with no context at all).
-- If mass is missing → infer it from the product category (chair=4.5kg, 500mL bottle=0.025kg,
+- CRITICAL: If 'mass' or 'geography' are already provided in Constraints, DO NOT infer them and DO NOT create an assumption for them. Use the provided constraints explicitly!
+- If mass is missing in Constraints → infer it from the product category (chair=4.5kg, 500mL bottle=0.025kg,
   generic part=1.0kg) and record the assumption.
 - If material is missing → choose the most plausible one by technical exclusion (Step 3)
   and record the assumption.
-- If geography is missing → default to RER (Europe) or GLO and record the assumption.
-- HARD LOCK GEOGRAPHY: If the user specifies a geography/nation (e.g., 'in Perù'), it is a PRIMARY CONSTRAINT. You MUST extract it, translate it to English, and NEVER declare it 'not specified'.
+- If geography is missing in Constraints → default to RER (Europe) or GLO and record the assumption.
+- HARD LOCK GEOGRAPHY: If the user specifies a geography/nation (e.g., 'in Perù') or if it's in Constraints, it is a PRIMARY CONSTRAINT. You MUST extract it, translate it to English, and NEVER declare it 'not specified'.
 - You MUST translate BOTH the extracted material name and the geography into English.
 - NEVER leave fields at zero or undefined when an assumption can fill them.
 
 ALWAYS ensure:
 - You determine if it's a material or object (Step 1).
 - You extract logistics distance_km ONLY if explicitly stated by the user (Step 6).
-- Every assumption is listed in assumptions_made with a clear explanation.
+- Every assumption is listed in assumptions_made with a clear explanation. ONLY list actual assumptions made. Do NOT list 'no assumption needed' or 'provided by user' notes.
 - You use the EXACT geometry labels from Step 4 (Corpi Cavi, Pezzi Pieni Complessi,
   Film, Profili/Tubi).
 - JSON keys remain in English; user-facing text (assumptions_made, justification) must
@@ -101,7 +108,39 @@ ALWAYS ensure:
             "usa": "United States of America",
             "united states": "United States of America",
             "cina": "China",
-            "china": "China"
+            "china": "China",
+            # ISO codes and country names for Europe
+            "de": "Europe without Switzerland",
+            "germany": "Europe without Switzerland",
+            "germania": "Europe without Switzerland",
+            "it": "Europe without Switzerland",
+            "italy": "Europe without Switzerland",
+            "italia": "Europe without Switzerland",
+            "fr": "Europe without Switzerland",
+            "france": "Europe without Switzerland",
+            "francia": "Europe without Switzerland",
+            "es": "Europe without Switzerland",
+            "spain": "Europe without Switzerland",
+            "spagna": "Europe without Switzerland",
+            "ch": "Europe without Switzerland",
+            "switzerland": "Europe without Switzerland",
+            "svizzera": "Europe without Switzerland",
+            "gb": "Europe without Switzerland",
+            "uk": "Europe without Switzerland",
+            "united kingdom": "Europe without Switzerland",
+            "regno unito": "Europe without Switzerland",
+            "nl": "Europe without Switzerland",
+            "be": "Europe without Switzerland",
+            "se": "Europe without Switzerland",
+            "pl": "Europe without Switzerland",
+            "at": "Europe without Switzerland",
+            "pt": "Europe without Switzerland",
+            "dk": "Europe without Switzerland",
+            "fi": "Europe without Switzerland",
+            "gr": "Europe without Switzerland",
+            "ie": "Europe without Switzerland",
+            "cz": "Europe without Switzerland",
+            "ro": "Europe without Switzerland",
         }
         
         mapped_geo = GEO_MAPPING.get(raw_geography.lower())
@@ -170,15 +209,19 @@ ALWAYS ensure:
                 # Il materiale non è presente nel DB con sufficiente confidenza
                 # (threshold > 0.85) nella catena geografica [location → RER → GLO → RoW].
                 # Blocca il workflow e avvisa l'utente: NON usare dati non correlati.
+                display_geo = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(geography.lower(), geography.title())
+                suggested_alt = {"marble": "natural stone o concrete", "carbon fiber": "glass fiber o generic composite", "bamboo": "wood o generic biomass", "hemp": "natural fiber o flax", "kevlar": "aramid fiber", "titanium": "stainless steel o aluminum alloy"}.get(mat.lower(), "una categoria superiore (es. 'natural stone' o 'concrete')")
+
                 error_msg = (
                     f"⚠️ **Materiale non trovato nel database LCA** (soglia similarità: 0.85).\n\n"
                     f"Il materiale **'{mat}'** non è presente nel dataset ecoinvent "
-                    f"per la geografia '{geography}' né nei proxy regionali (RER, GLO, RoW).\n\n"
-                    f"**Azioni possibili:**\n"
-                    f"- Fornisci un nome alternativo del materiale in inglese (es. 'polypropylene', 'steel').\n"
-                    f"- Specifica una geografia diversa (es. 'GLO', 'RER', 'Europe').\n"
-                    f"- Se il materiale è un prodotto agricolo o grezzo, potrebbe non essere "
-                    f"nel dataset dei materiali industriali."
+                    f"per la geografia **'{display_geo}'** né nei proxy regionali (RER, GLO, RoW).\n\n"
+                    f"Questo blocco è necessario per garantire che i calcoli di sostenibilità siano basati su dati certificati e non su stime incerte.\n\n"
+                    f"**Suggerimenti per la risoluzione:**\n"
+                    f"- Prova a cercare con {suggested_alt}.\n"
+                    f"- Fornisci un nome del materiale più generico in inglese (es. 'polypropylene', 'steel').\n"
+                    f"- Cambia l'area geografica (es. 'Global', 'Europe').\n"
+                    f"- Nota: i prodotti agricoli o grezzi molto specifici potrebbero non essere coperti dal dataset industriale."
                 )
                 assumptions.append(
                     f"ERRORE RETRIEVAL: Materiale '{mat}' non trovato nel DB LCA (soglia 0.85) "

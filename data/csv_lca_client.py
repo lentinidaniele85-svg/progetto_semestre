@@ -194,9 +194,11 @@ class CSVLcaClient(LCADataProvider):
 
     def find_closest_match(
         self,
-        label: str,
+        label: Optional[str] = None,
         location: Optional[str] = None,
         threshold: float = 0.85,
+        target_product: Optional[str] = None,
+        target_geography: Optional[str] = None,
     ) -> Optional[dict]:
         """Find the closest matching material using hierarchical strict search.
         
@@ -210,8 +212,14 @@ class CSVLcaClient(LCADataProvider):
         
         FASE C: Hard Stop
         """
-        label_lower = label.lower().strip()
-        canonical_loc = _normalise_location(location)
+        actual_label = target_product if target_product is not None else label
+        actual_location = target_geography if target_geography is not None else location
+        
+        if not actual_label:
+            return None
+            
+        label_lower = actual_label.lower().strip()
+        canonical_loc = _normalise_location(actual_location)
 
         cache_key = f"{label_lower}__{canonical_loc}_strict"
         if cache_key in self._match_cache:
