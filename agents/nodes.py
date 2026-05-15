@@ -239,7 +239,7 @@ async def lca_validator(state: AgentState) -> dict:
                     # Proxy geografico usato — solo warning, non crash
                     _geo_note = (
                         f"Nota: per '{original_material}' richiesta geografia '{geography}', "
-                        f"usato proxy geografico '{loc_found}' dal database."
+                        f"usato proxy geografico '{loc_found}' dal database perché in '{geography}' non sono stati trovati dati primari/vergini."
                     )
                     assumptions.append(_geo_note)
                     logger.info(_geo_note)
@@ -308,7 +308,7 @@ async def lca_validator(state: AgentState) -> dict:
                         # Proxy geografico usato — solo warning, non crash
                         _geo_note_alt = (
                             f"Nota: per alternativa '{alt_name}' richiesta geografia '{geography}', "
-                            f"usato proxy geografico '{loc_found_alt}' dal database."
+                            f"usato proxy geografico '{loc_found_alt}' dal database perché in '{geography}' non sono stati trovati dati primari/vergini."
                         )
                         assumptions.append(_geo_note_alt)
                         logger.info(_geo_note_alt)

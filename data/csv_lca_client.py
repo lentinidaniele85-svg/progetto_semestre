@@ -25,23 +25,30 @@ _LOCATION_NORMALISE: dict[str, str] = {
     # Italian names
     "italia":               "Italy",
     "italy":                "Italy",
+    "it":                   "Italy",
     "cina":                 "China",
     "china":                "China",
+    "cn":                   "China",
     "stati uniti":          "United States of America",
     "usa":                  "United States of America",
+    "us":                   "United States of America",
     "united states":        "United States of America",
     "united states of america": "United States of America",
     "germania":             "Germany",
     "germany":              "Germany",
+    "de":                   "Germany",
     "francia":              "France",
     "france":               "France",
+    "fr":                   "France",
     "spagna":               "Spain",
     "spain":                "Spain",
+    "es":                   "Spain",
     "regno unito":          "United Kingdom",
     "uk":                   "United Kingdom",
-    "united kingdom":       "United Kingdom",
+    "gb":                   "United Kingdom",
     "svizzera":             "Switzerland",
     "switzerland":          "Switzerland",
+    "ch":                   "Switzerland",
     # Regional / global aliases
     "europa":               "Europe without Switzerland",
     "europe":               "Europe without Switzerland",
@@ -254,9 +261,10 @@ class CSVLcaClient(LCADataProvider):
             return None
             
         label_lower = actual_label.lower().strip()
+        exact_loc = actual_location.strip() if actual_location else ""
         canonical_loc = _normalise_location(actual_location)
 
-        cache_key = f"{label_lower}__{canonical_loc}_semantic_{task_type}"
+        cache_key = f"{label_lower}__{exact_loc}__{canonical_loc}_semantic_{task_type}"
         if cache_key in self._match_cache:
             return self._match_cache[cache_key]
 
@@ -267,12 +275,14 @@ class CSVLcaClient(LCADataProvider):
         search_terms = _expand_semantic_terms(label_lower)
 
         # STADIO 3: Fallback Geografico (Outer Loop)
-        # Eseguiamo la ricerca partendo dalla geografia originale, 
-        # e se non troviamo nulla passiamo ai binari più larghi.
-        geographies_to_try = []
-        if canonical_loc:
-            geographies_to_try.append(canonical_loc)
-            geographies_to_try.extend(_get_regional_bin(canonical_loc))
+        # 1. Forced Geographic Array: [location] + _get_regional_bin(location)
+        target_loc = exact_loc if exact_loc else (canonical_loc if canonical_loc else "Global")
+        
+        geographies_to_try = [target_loc]
+        if target_loc != "Global":
+            if canonical_loc and canonical_loc != target_loc:
+                 geographies_to_try.append(canonical_loc)
+            geographies_to_try.extend(_get_regional_bin(canonical_loc if canonical_loc else target_loc))
         else:
             geographies_to_try.extend(["Global", "Rest-of-World"])
             
@@ -282,24 +292,28 @@ class CSVLcaClient(LCADataProvider):
 
         result: Optional[dict] = None
         
-        # Waterfall con Soglia Dinamica
-        thresholds_to_try = [0.85, 0.70]
-        
-        for current_threshold in thresholds_to_try:
-            for i, geo in enumerate(geographies_to_try):
-                if i > 0:
-                    print(f"[DEBUG] Passo a {geo}...")
-                else:
-                    print(f"[DEBUG] Cerco in {geo}...")
-                is_fallback = (geo != canonical_loc) if canonical_loc else False
-                # STADIO 2 eseguito dentro _search_best_match per ogni geografia
-                row = self._search_best_match(search_terms, label_lower, geo, task_type, current_threshold, self._df)
-                if row is not None:
-                    result = self._build_result(row, location_fallback_used=is_fallback)
-                    break
-            
-            if result is not None:
-                break
+        # 3. "Virgin-First" Logic Enforcement (Pass 1)
+        for i, geo in enumerate(geographies_to_try):
+            if i == 0:
+                print(f"[DEBUG] Stage 0: Cerco in {geo}...")
+            else:
+                print(f"[DEBUG] Nessun match in {geographies_to_try[i-1]}. Passo a {geo}...")
+                
+            is_fallback = (geo != canonical_loc) if canonical_loc else False
+            row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.85, self._df, require_virgin=True)
+            if row is not None:
+                result = self._build_result(row, location_fallback_used=is_fallback)
+                self._match_cache[cache_key] = result
+                return result
+
+        # Pass 2: Fallback Standard se non esiste materiale virgin (soglia 0.70)
+        for i, geo in enumerate(geographies_to_try):
+            is_fallback = (geo != canonical_loc) if canonical_loc else False
+            row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.70, self._df, require_virgin=False)
+            if row is not None:
+                result = self._build_result(row, location_fallback_used=is_fallback)
+                self._match_cache[cache_key] = result
+                return result
 
         # Hard Stop - Se non trovato nulla in nessuna geografia
         self._match_cache[cache_key] = result
@@ -324,7 +338,8 @@ class CSVLcaClient(LCADataProvider):
 
     def _search_best_match(
         self, search_terms: List[str], original_label: str, loc: str, 
-        task_type: str, threshold: float, base_df: pd.DataFrame
+        task_type: str, threshold: float, base_df: pd.DataFrame,
+        require_virgin: bool = False
     ) -> Optional[pd.Series]:
         """Return the best-matching DataFrame row evaluating all semantic terms with dynamic filters."""
         df_search = self._get_location_subset(loc, base_df)
@@ -355,6 +370,11 @@ class CSVLcaClient(LCADataProvider):
             impact = float(row["climatechangeimpact"])
             name_combined = f"{out_name} {proc_name}"
             
+            import re
+            if require_virgin and re.search(r"waste|scrap|scarto", name_combined):
+                print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Virgin-First Enforced)")
+                continue
+                
             if is_metal:
                 # Scarta waste/scrap/scarto OPPURE impatto < 1.0
                 import re
@@ -395,20 +415,39 @@ class CSVLcaClient(LCADataProvider):
                 continue
                 
             # Calcola lo score migliore tra tutti i termini di ricerca su entrambe le colonne
-            score_out = max((difflib.SequenceMatcher(None, term, out_name).ratio() for term in search_terms), default=0.0)
-            score_proc = max((difflib.SequenceMatcher(None, term, proc_name).ratio() for term in search_terms), default=0.0)
+            def get_base_score(term, text):
+                if term == text:
+                    return 1.0
+                words = text.split()
+                if term in words:
+                    return 0.85
+                return difflib.SequenceMatcher(None, term, text).ratio()
+
+            score_out = max((get_base_score(term, out_name) for term in search_terms), default=0.0)
+            score_proc = max((get_base_score(term, proc_name) for term in search_terms), default=0.0)
             score = max(score_out, score_proc)
             
-            # Bonus per dataset "market for"
-            is_market = "market for" in proc_name
-            if is_market:
-                score += 0.05
-                
             # Penalità/Bonus Industriale
             if any(term in name_combined for term in ["bark", "sawdust", "shavings"]) and not any(term in original_label for term in ["bark", "sawdust", "shavings"]):
                 score -= 0.2
-            if "sawnwood" in name_combined or "production" in name_combined:
+            if "sawnwood" in name_combined:
                 score += 0.1
+                
+            # Penalità di Fedeltà: Scarta la ghisa (iron/cast iron) se l'utente ha chiesto acciaio (steel)
+            if "steel" in search_terms and "iron" not in search_terms and "ghisa" not in search_terms:
+                if "iron" in name_combined or "cast iron" in name_combined:
+                    score -= 0.5
+                    
+            # 2. Industrial Quality Scoring (Stop "Pipe" Hallucinations)
+            bonus_terms = ["market for", "production", "primary", "unalloyed", "low-alloyed"]
+            penalty_terms = ["pipe", "tube", "welding", "extrusion", "drawing", "wire", "trawler", "seiner", "liner", "vessel", "ship", "vehicle", "machinery", "infrastructure", "forging", "processing"]
+            
+            if any(term in name_combined for term in bonus_terms):
+                score += 0.3
+                
+            if any(term in name_combined for term in penalty_terms):
+                score -= 0.5
+                print(f"[DEBUG] Declassato '{row['outputname']}' (-0.5) perché processo/prodotto finito/veicolo. Cerco materia prima...")
                 
             if score > best_score:
                 best_score = score

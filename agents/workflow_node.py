@@ -112,59 +112,7 @@ ALWAYS ensure:
         raw_geography = result.geography or "Not specified"
         raw_geography = normalize_text(raw_geography)
         
-        GEO_MAPPING = {
-            "europa": "Europe without Switzerland",
-            "europe": "Europe without Switzerland",
-            "rer": "Europe without Switzerland",
-            "mondo": "Global",
-            "globale": "Global",
-            "world": "Global",
-            "global": "Global",
-            "glo": "Global",
-            "row": "Rest-of-World",
-            "rest of world": "Rest-of-World",
-            "resto del mondo": "Rest-of-World",
-            "stati uniti": "United States of America",
-            "usa": "United States of America",
-            "united states": "United States of America",
-            "cina": "China",
-            "china": "China",
-            # ISO codes and country names for Europe
-            "de": "Europe without Switzerland",
-            "germany": "Europe without Switzerland",
-            "germania": "Europe without Switzerland",
-            "it": "Europe without Switzerland",
-            "italy": "Europe without Switzerland",
-            "italia": "Europe without Switzerland",
-            "fr": "Europe without Switzerland",
-            "france": "Europe without Switzerland",
-            "francia": "Europe without Switzerland",
-            "es": "Europe without Switzerland",
-            "spain": "Europe without Switzerland",
-            "spagna": "Europe without Switzerland",
-            "ch": "Europe without Switzerland",
-            "switzerland": "Europe without Switzerland",
-            "svizzera": "Europe without Switzerland",
-            "gb": "Europe without Switzerland",
-            "uk": "Europe without Switzerland",
-            "united kingdom": "Europe without Switzerland",
-            "regno unito": "Europe without Switzerland",
-            "nl": "Europe without Switzerland",
-            "be": "Europe without Switzerland",
-            "se": "Europe without Switzerland",
-            "pl": "Europe without Switzerland",
-            "at": "Europe without Switzerland",
-            "pt": "Europe without Switzerland",
-            "dk": "Europe without Switzerland",
-            "fi": "Europe without Switzerland",
-            "gr": "Europe without Switzerland",
-            "ie": "Europe without Switzerland",
-            "cz": "Europe without Switzerland",
-            "ro": "Europe without Switzerland",
-        }
-        
-        mapped_geo = GEO_MAPPING.get(raw_geography.lower())
-        geography = mapped_geo if mapped_geo else raw_geography.title()
+        geography = raw_geography.title() if raw_geography else "Not specified"
 
         is_interview_complete = result.is_interview_complete
 
