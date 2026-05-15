@@ -45,6 +45,8 @@ system_prompt: |
     2. Briefly explained in the `thought` field in the user's language.
     3. Based on well-known engineering or industrial standards.
 
+  CRITICAL: You must NEVER paraphrase, translate, or alter the names of geographic regions provided by the database. If the system indicates a proxy of 'Europe without Switzerland', you must write exactly 'Europe without Switzerland'. Do not invent or substitute countries (e.g., never write 'Austria'). Be literal and factual.
+
   Examples of correct proactive behaviour:
   - Mass not given for a plastic chair → assume 4.5 kg (standard
     residential chair weight per ISO furniture norms).

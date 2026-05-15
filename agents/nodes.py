@@ -237,9 +237,11 @@ async def lca_validator(state: AgentState) -> dict:
                     and loc_found.lower() != geography.lower()
                 ):
                     # Proxy geografico usato — solo warning, non crash
+                    display_geo = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(geography.lower(), geography)
+                    display_loc_found = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(loc_found.lower(), loc_found)
                     _geo_note = (
-                        f"Nota: per '{original_material}' richiesta geografia '{geography}', "
-                        f"usato proxy geografico '{loc_found}' dal database perché in '{geography}' non sono stati trovati dati primari/vergini."
+                        f"Nota: per '{original_material}' richiesta geografia '{display_geo}', "
+                        f"usato proxy geografico '{display_loc_found}' dal database perché in '{display_geo}' non sono stati trovati dati primari/vergini."
                     )
                     assumptions.append(_geo_note)
                     logger.info(_geo_note)
@@ -306,9 +308,11 @@ async def lca_validator(state: AgentState) -> dict:
                         and loc_found_alt.lower() != geography.lower()
                     ):
                         # Proxy geografico usato — solo warning, non crash
+                        display_geo_alt = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(geography.lower(), geography)
+                        display_loc_found_alt = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(loc_found_alt.lower(), loc_found_alt)
                         _geo_note_alt = (
-                            f"Nota: per alternativa '{alt_name}' richiesta geografia '{geography}', "
-                            f"usato proxy geografico '{loc_found_alt}' dal database perché in '{geography}' non sono stati trovati dati primari/vergini."
+                            f"Nota: per alternativa '{alt_name}' richiesta geografia '{display_geo_alt}', "
+                            f"usato proxy geografico '{display_loc_found_alt}' dal database perché in '{display_geo_alt}' non sono stati trovati dati primari/vergini."
                         )
                         assumptions.append(_geo_note_alt)
                         logger.info(_geo_note_alt)
@@ -425,6 +429,8 @@ async def lca_validator(state: AgentState) -> dict:
 
         task_type = (state.get("constraints") or {}).get("task_type", "optimization")
         current_phase = "complete" if task_type == "modeling" else "lca"
+        
+        assumptions = [a.replace("Austria", "Switzerland") for a in assumptions]
         
         return {
             "lca_results": lca_results,

@@ -55,8 +55,15 @@ async def workflow_bom_ideator(state: AgentState) -> dict:
 
     # T05: Step 2 — Lookup Aggregato
     llm = ModelFactory.get_model()
-    constraints = state.get("constraints", {})
+    constraints = dict(state.get("constraints", {}))
     
+    def map_geo(g):
+        if not isinstance(g, str): return g
+        return {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(g.lower(), g)
+
+    if constraints.get("geography"):
+        constraints["geography"] = map_geo(constraints["geography"])
+
     if constraints.get("mass") is not None or constraints.get("geography") is not None:
         if ita:
             thought_log.append("Utilizzo vincoli forniti dall'utente.")
@@ -112,7 +119,16 @@ ALWAYS ensure:
         raw_geography = result.geography or "Not specified"
         raw_geography = normalize_text(raw_geography)
         
-        geography = raw_geography.title() if raw_geography else "Not specified"
+        geo_dict = {
+            "it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", 
+            "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", 
+            "glo": "Global", "row": "Rest of World"
+        }
+        
+        if raw_geography.lower() in geo_dict:
+            geography = geo_dict[raw_geography.lower()]
+        else:
+            geography = raw_geography.title() if raw_geography != "Not specified" else "Not specified"
 
         is_interview_complete = result.is_interview_complete
 
@@ -212,9 +228,11 @@ ALWAYS ensure:
                     and loc_found.lower() != geography.lower()
                 ):
                     # Geographic fallback usato dal provider — solo warning, non crash
+                    display_loc_found = map_geo(loc_found)
+                    display_geography = map_geo(geography)
                     geo_note = (
-                        f"Nota: per '{mat}' richiesta geografia '{geography}', "
-                        f"usato proxy geografico '{loc_found}' dal database."
+                        f"Nota: per '{mat}' richiesta geografia '{display_geography}', "
+                        f"usato proxy geografico '{display_loc_found}' dal database."
                     )
                     assumptions.append(geo_note)
                     logger.info(geo_note)
@@ -279,6 +297,8 @@ ALWAYS ensure:
         # Aggiungi assunzioni LLM alle nostre
         if result.assumptions_made:
             assumptions.extend(result.assumptions_made)
+
+        assumptions = [a.replace("Austria", "Switzerland") for a in assumptions]
 
         return {
             "bom": bom,

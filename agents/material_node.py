@@ -14,7 +14,15 @@ async def material_ideator(state: AgentState) -> dict:
     thought_log.append("Esecuzione Material Ideator (Selezione Alternative Sostenibili)...")
 
     llm = ModelFactory.get_model()
-    constraints = state.get("constraints", {})
+    constraints = dict(state.get("constraints", {}))
+    
+    def map_geo(g):
+        if not isinstance(g, str): return g
+        return {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(g.lower(), g)
+
+    if constraints.get("geography"):
+        constraints["geography"] = map_geo(constraints["geography"])
+
     bom = state.get("bom", [])
     
     system_prompt = ModelFactory.get_system_prompt("semantic_ideation_api").format(

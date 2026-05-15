@@ -417,11 +417,19 @@ class CSVLcaClient(LCADataProvider):
             # Calcola lo score migliore tra tutti i termini di ricerca su entrambe le colonne
             def get_base_score(term, text):
                 if term == text:
-                    return 1.0
-                words = text.split()
-                if term in words:
-                    return 0.85
-                return difflib.SequenceMatcher(None, term, text).ratio()
+                    score_base = 1.0
+                else:
+                    words = text.split()
+                    if term in words:
+                        score_base = 0.85
+                    else:
+                        score_base = difflib.SequenceMatcher(None, term, text).ratio()
+                
+                word_diff = len(text.split()) - len(term.split())
+                if word_diff > 0:
+                    score_base -= (0.15 * word_diff)
+                
+                return score_base
 
             score_out = max((get_base_score(term, out_name) for term in search_terms), default=0.0)
             score_proc = max((get_base_score(term, proc_name) for term in search_terms), default=0.0)
