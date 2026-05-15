@@ -56,6 +56,13 @@ PROCESS_IMPACTS: dict[str, float] = {
     "Injection moulding": 1.2,
     "Extrusion (film)": 0.5,
     "Extrusion": 0.6,
+    "Metal working": 1.5,
+    "Section bar rolling": 1.1,
+    "Metal sheet rolling": 1.0,
+    "Woodworking": 0.3,
+    "Textile weaving": 0.8,
+    "Glass production": 1.4,
+    "Ceramic firing": 1.6,
 }
 
 # Impatto trasporto [kg CO₂ eq / (tonnellata · km)]

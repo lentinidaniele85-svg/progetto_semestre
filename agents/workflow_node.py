@@ -25,6 +25,24 @@ GEOMETRY_MAPPING = {
     "Profili/Tubi": "Extrusion",
 }
 
+def determine_manufacturing_process(material: str, geometry: str) -> str:
+    mat_lower = material.lower()
+    if any(m in mat_lower for m in ["steel", "aluminum", "aluminium", "iron", "copper", "brass", "metal", "titanium", "acciaio"]):
+        if geometry == "Profili/Tubi":
+            return "Section bar rolling"
+        elif geometry == "Film":
+            return "Metal sheet rolling"
+        else:
+            return "Metal working"
+    elif any(m in mat_lower for m in ["wood", "timber", "plywood", "mdf", "bamboo", "legno"]):
+        return "Woodworking"
+    elif any(m in mat_lower for m in ["cotton", "polyester", "fabric", "textile", "nylon", "hemp"]):
+        return "Textile weaving"
+    elif any(m in mat_lower for m in ["glass", "ceramic", "vetro", "ceramica"]):
+        return "Glass production" if "glass" in mat_lower or "vetro" in mat_lower else "Ceramic firing"
+    else:
+        return GEOMETRY_MAPPING.get(geometry, "Injection moulding")
+
 async def workflow_bom_ideator(state: AgentState) -> dict:
     from agents.nodes import is_italian
     ita = is_italian(state.get("user_input", ""))
@@ -48,6 +66,7 @@ async def workflow_bom_ideator(state: AgentState) -> dict:
     system_prompt = ModelFactory.get_system_prompt("semantic_ideation_api").format(
         user_input=state.get("user_input", ""),
         constraints=json.dumps(constraints),
+        geography=constraints.get("geography", "Unknown Geography"),
     )
 
     user_prompt = f"""
@@ -66,6 +85,7 @@ ASSUMPTION-FIRST RULES (mandatory):
   and record the assumption.
 - If geography is missing in Constraints → default to RER (Europe) or GLO and record the assumption.
 - HARD LOCK GEOGRAPHY: If the user specifies a geography/nation (e.g., 'in Perù') or if it's in Constraints, it is a PRIMARY CONSTRAINT. You MUST extract it, translate it to English, and NEVER declare it 'not specified'.
+- MATERIAL SPECIFICITY: Output the basic industrial material name (e.g., 'steel', 'aluminum', 'polypropylene'). DO NOT add adjectives like 'virgin', 'natural', or 'primary'. Our database logic will automatically filter out waste/scrap datasets. NEVER use 'waste' or 'recycled' unless explicitly requested by the user.
 - You MUST translate BOTH the extracted material name and the geography into English.
 - NEVER leave fields at zero or undefined when an assumption can fill them.
 
@@ -153,7 +173,7 @@ ALWAYS ensure:
             for comp_data in result.components:
                 comp_dict = comp_data.model_dump() if hasattr(comp_data, "model_dump") else (comp_data.dict() if hasattr(comp_data, "dict") else comp_data)
                 mat = comp_dict.get("material", "unknown") if isinstance(comp_dict, dict) else "unknown"
-                match = provider.find_closest_match(mat, location=geography, threshold=0.8)
+                match = provider.find_closest_match(mat, location=geography, threshold=0.8, task_type=state.get("constraints", {}).get("task_type", "optimization"))
                 if not match:
                     all_matched = False
                     break
@@ -202,7 +222,7 @@ ALWAYS ensure:
             comp["material"] = mat
 
             # 1. Fuzzy Match del materiale nel DataSet.xlsx
-            best_match = provider.find_closest_match(mat, location=geography)
+            best_match = provider.find_closest_match(mat, location=geography, task_type=state.get("constraints", {}).get("task_type", "optimization"))
 
             if not best_match or best_match.get("environmental_impact") is None:
                 # ── STRICT MODE — MATERIAL NOT FOUND ─────────────────────────
@@ -261,7 +281,7 @@ ALWAYS ensure:
 
             # 2. Mapping Geometria → Processo
             geom = comp.get("geometry", "Pezzi Pieni Complessi")
-            comp["manufacturing_process"] = GEOMETRY_MAPPING.get(geom, "Injection moulding")
+            comp["manufacturing_process"] = determine_manufacturing_process(mat, geom)
 
             # Baseline per compatibilità schema
             comp["baseline_environmental_impact"] = comp["unit_impact_value"]
@@ -302,6 +322,11 @@ ALWAYS ensure:
             "distance_km": dist_km,
             "tkm": tkm,
         }
+
+        workflow.append({
+            "process_name": "Lorry transport",
+            "process_output": f"{tkm:.1f} tkm"
+        })
 
         # Aggiungi assunzioni LLM alle nostre
         if result.assumptions_made:

@@ -87,6 +87,45 @@ _CATEGORY_COST: List[Tuple[Tuple[str, ...], float]] = [
 _DEFAULT_COST_PER_KG = 1.0  # fallback when no category matches
 
 
+_SEMANTIC_SYNONYMS: dict[str, List[str]] = {
+    "acciaio": ["steel", "cast iron", "ferro"],
+    "steel": ["steel", "cast iron"],
+    "alluminio": ["aluminum", "aluminium", "alloy"],
+    "aluminum": ["aluminum", "aluminium", "alloy"],
+    "aluminium": ["aluminum", "aluminium", "alloy"],
+    "plastica": ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe"],
+    "plastic": ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe"],
+    "vetro": ["glass", "silica"],
+    "glass": ["glass", "silica"],
+    "legno": ["wood", "timber", "plywood", "mdf", "board"],
+    "wood": ["wood", "timber", "plywood", "mdf", "board"],
+    "rame": ["copper"],
+    "copper": ["copper"],
+    "ottone": ["brass"],
+    "brass": ["brass"],
+    "ferro": ["iron", "cast iron", "steel"],
+    "iron": ["iron", "cast iron", "steel"],
+    "titanio": ["titanium"],
+    "titanium": ["titanium"],
+}
+
+def _expand_semantic_terms(label: str) -> List[str]:
+    """Return a list of expanded industrial synonyms for a given label."""
+    base_term = label.strip().lower()
+    expanded = [base_term]
+    for key, synonyms in _SEMANTIC_SYNONYMS.items():
+        if key in base_term:
+            expanded.extend(synonyms)
+    # Remove duplicates but preserve order
+    seen = set()
+    result = []
+    for term in expanded:
+        if term not in seen:
+            seen.add(term)
+            result.append(term)
+    return result
+
+
 def _normalise_location(raw: Optional[str]) -> str:
     """Return the canonical dataset location code for a user-supplied string.
 
@@ -110,7 +149,7 @@ def _get_regional_bin(canonical_location: str) -> List[str]:
     if not loc or loc.lower() in ("global", "rest-of-world", "glo", "row"):
         return ["Global", "Rest-of-World"]
     if any(loc.lower() == ec.lower() for ec in _EUROPEAN_CODES):
-        return ["Europe without Switzerland"]
+        return ["Europe without Switzerland", "Global", "Rest-of-World"]
     return ["Global", "Rest-of-World"]
 
 def _get_geometry(name: str) -> Optional[str]:
@@ -136,8 +175,9 @@ class CSVLcaClient(LCADataProvider):
         self._df.columns = [c.strip().lower() for c in self._df.columns]
         self._validate_schema()
 
-        # Pre-compute lowercase flowname column for fast vectorised search.
+        # Pre-compute lowercase columns for fast vectorised search.
         self._df["_flowname_lower"] = self._df["outputname"].str.lower()
+        self._df["_processname_lower"] = self._df["processname"].str.lower()
 
         # Convert climatechangeimpact to float
         self._df["climatechangeimpact"] = pd.to_numeric(
@@ -196,21 +236,16 @@ class CSVLcaClient(LCADataProvider):
         self,
         label: Optional[str] = None,
         location: Optional[str] = None,
-        threshold: float = 0.85,
+        threshold: float = 0.65,
         target_product: Optional[str] = None,
         target_geography: Optional[str] = None,
+        task_type: str = "optimization"
     ) -> Optional[dict]:
-        """Find the closest matching material using hierarchical strict search.
+        """Find the closest matching material using a 3-stage search logic.
         
-        FASE A: Exact Match
-        Step 1: Local
-        Step 2: Regional Bin
-        
-        FASE B: Fuzzy Match (0.85)
-        Step 3: Fuzzy Local (with geometry constraint)
-        Step 4: Fuzzy Regional (with geometry constraint)
-        
-        FASE C: Hard Stop
+        STADIO 1: Espansione Semantica (The "Think" Phase)
+        STADIO 2: Ricerca Fuzzy con Filtro Dinamico (The Best-Match Logic)
+        STADIO 3: Fallback Intelligente (Geographic Expansion)
         """
         actual_label = target_product if target_product is not None else label
         actual_location = target_geography if target_geography is not None else location
@@ -221,48 +256,52 @@ class CSVLcaClient(LCADataProvider):
         label_lower = actual_label.lower().strip()
         canonical_loc = _normalise_location(actual_location)
 
-        cache_key = f"{label_lower}__{canonical_loc}_strict"
+        cache_key = f"{label_lower}__{canonical_loc}_semantic_{task_type}"
         if cache_key in self._match_cache:
             return self._match_cache[cache_key]
 
         if self._df.empty:
             return None
 
-        # Determine the correct geographic bin
-        regional_bins = _get_regional_bin(canonical_loc)
+        # STADIO 1: Espansione Semantica
+        search_terms = _expand_semantic_terms(label_lower)
+
+        # STADIO 3: Fallback Geografico (Outer Loop)
+        # Eseguiamo la ricerca partendo dalla geografia originale, 
+        # e se non troviamo nulla passiamo ai binari più larghi.
+        geographies_to_try = []
+        if canonical_loc:
+            geographies_to_try.append(canonical_loc)
+            geographies_to_try.extend(_get_regional_bin(canonical_loc))
+        else:
+            geographies_to_try.extend(["Global", "Rest-of-World"])
+            
+        # Remove duplicates preserving order
+        seen_geo = set()
+        geographies_to_try = [g for g in geographies_to_try if not (g in seen_geo or seen_geo.add(g))]
 
         result: Optional[dict] = None
         
-        # FASE A: Ricerca Prodotto Esatto (Match 1.0)
-        # Step 1 (Locale): exact match in requested geography
-        row = self._search_exact(label_lower, canonical_loc)
-        if row is not None:
-            result = self._build_result(row, location_fallback_used=False)
-            
-        # Step 2 (Binario Regionale): exact match in regional bin
-        if result is None:
-            for r_bin in regional_bins:
-                row = self._search_exact(label_lower, r_bin)
+        # Waterfall con Soglia Dinamica
+        thresholds_to_try = [0.85, 0.70]
+        
+        for current_threshold in thresholds_to_try:
+            for i, geo in enumerate(geographies_to_try):
+                if i > 0:
+                    print(f"[DEBUG] Passo a {geo}...")
+                else:
+                    print(f"[DEBUG] Cerco in {geo}...")
+                is_fallback = (geo != canonical_loc) if canonical_loc else False
+                # STADIO 2 eseguito dentro _search_best_match per ogni geografia
+                row = self._search_best_match(search_terms, label_lower, geo, task_type, current_threshold, self._df)
                 if row is not None:
-                    result = self._build_result(row, location_fallback_used=True)
+                    result = self._build_result(row, location_fallback_used=is_fallback)
                     break
-                    
-        # FASE B: Ricerca Prodotto Simile (Fuzzy Match 0.85)
-        if result is None:
-            # Step 3 (Fuzzy Locale): fuzzy match in requested geography
-            row = self._search_fuzzy(label_lower, canonical_loc, threshold)
-            if row is not None:
-                result = self._build_result(row, location_fallback_used=False)
-                
-            # Step 4 (Fuzzy Regionale): fuzzy match in regional bin
-            if result is None:
-                for r_bin in regional_bins:
-                    row = self._search_fuzzy(label_lower, r_bin, threshold)
-                    if row is not None:
-                        result = self._build_result(row, location_fallback_used=True)
-                        break
+            
+            if result is not None:
+                break
 
-        # FASE C: Hard Stop - Se non trovato, ritorna None
+        # Hard Stop - Se non trovato nulla in nessuna geografia
         self._match_cache[cache_key] = result
         return result
 
@@ -270,8 +309,8 @@ class CSVLcaClient(LCADataProvider):
     # Internal search helpers
     # ------------------------------------------------------------------
 
-    def _get_location_subset(self, loc: str) -> pd.DataFrame:
-        df_search = self._df
+    def _get_location_subset(self, loc: str, base_df: pd.DataFrame) -> pd.DataFrame:
+        df_search = base_df
         if loc:
             mask_exact = df_search["location"].str.upper() == loc.upper()
             if mask_exact.any():
@@ -283,45 +322,103 @@ class CSVLcaClient(LCADataProvider):
             return df_search.iloc[0:0] 
         return df_search
 
-    def _search_exact(self, label_lower: str, loc: str) -> Optional[pd.Series]:
-        """Return the best-matching DataFrame row for an exact substring match."""
-        df_search = self._get_location_subset(loc)
+    def _search_best_match(
+        self, search_terms: List[str], original_label: str, loc: str, 
+        task_type: str, threshold: float, base_df: pd.DataFrame
+    ) -> Optional[pd.Series]:
+        """Return the best-matching DataFrame row evaluating all semantic terms with dynamic filters."""
+        df_search = self._get_location_subset(loc, base_df)
         if df_search.empty:
             return None
 
-        mask_sub = df_search["_flowname_lower"].str.contains(label_lower, regex=False, na=False)
-        subset = df_search[mask_sub]
+        # Raccogli tutti i potenziali candidati che matchano almeno un termine espanso come substring
+        # sia in outputname che in processname
+        masks_out = [df_search["_flowname_lower"].str.contains(term, regex=False, na=False) for term in search_terms]
+        masks_proc = [df_search["_processname_lower"].str.contains(term, regex=False, na=False) for term in search_terms]
+        
+        combined_mask_out = pd.concat(masks_out, axis=1).any(axis=1) if masks_out else pd.Series(False, index=df_search.index)
+        combined_mask_proc = pd.concat(masks_proc, axis=1).any(axis=1) if masks_proc else pd.Series(False, index=df_search.index)
+        
+        candidates = df_search[combined_mask_out | combined_mask_proc]
 
-        if not subset.empty:
-            market = subset[subset["processname"].str.contains("market for", case=False, na=False)]
-            if not market.empty:
-                subset = market
-            unique_names = subset["_flowname_lower"].unique()
-            best = min(unique_names, key=len)
-            return subset[subset["_flowname_lower"] == best].iloc[0]
+        if candidates.empty:
+            return None
+
+        # STADIO 2: Filtro Dinamico (Post-Processing)
+        is_metal = any(m in original_label for m in ["steel", "aluminum", "aluminium", "iron", "copper", "brass", "metal", "titanium", "acciaio", "alluminio", "ferro", "rame", "ottone"])
+        is_plastic = any(m in original_label for m in ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe", "polyester", "nylon", "plastica", "polimero"])
+        
+        valid_indices = []
+        for idx, row in candidates.iterrows():
+            out_name = row["_flowname_lower"]
+            proc_name = row["_processname_lower"]
+            impact = float(row["climatechangeimpact"])
+            name_combined = f"{out_name} {proc_name}"
             
-        return None
+            if is_metal:
+                # Scarta waste/scrap/scarto OPPURE impatto < 1.0
+                import re
+                if re.search(r"waste|scrap|scarto", name_combined) or impact < 1.0:
+                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Metallo: waste o <1.0)")
+                    continue
+            elif is_plastic:
+                # Permetti recycled ma solo se impatto > 0.8
+                if impact <= 0.8:
+                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Plastica: impatto <= 0.8)")
+                    continue
+            # Legno/Naturali non hanno limiti (nessun else break)
+            
+            valid_indices.append(idx)
+            
+        candidates = candidates.loc[valid_indices]
 
-    def _search_fuzzy(self, label_lower: str, loc: str, threshold: float) -> Optional[pd.Series]:
-        """Return the best-matching DataFrame row for a fuzzy match with geometry constraint."""
-        df_search = self._get_location_subset(loc)
-        if df_search.empty:
+        if candidates.empty:
+            print(f"[DEBUG] Geografia {loc} scartata (0 candidati validi dopo il filtro).")
             return None
 
-        unique_names = df_search["_flowname_lower"].unique()
-        matches = difflib.get_close_matches(label_lower, unique_names, n=10, cutoff=threshold)
+        # STADIO 2: Best-Match Logic
+        # Troviamo il candidato con la massima similarità usando difflib su entrambe le colonne
+        best_score = -1.0
+        best_row = None
+        orig_geom = _get_geometry(original_label)
         
-        orig_geom = _get_geometry(label_lower)
-        
-        for match in matches:
-            match_geom = _get_geometry(match)
-            # VINCOLO GEOMETRIA: scarta se le geometrie sono diverse o se una manca e l'altra no
-            if orig_geom != match_geom:
+        for idx, row in candidates.iterrows():
+            out_name = row["_flowname_lower"]
+            proc_name = row["_processname_lower"]
+            impact = float(row["climatechangeimpact"])
+            name_combined = f"{out_name} {proc_name}"
+            match_geom = _get_geometry(out_name)
+            
+            # VINCOLO GEOMETRIA: scarta se le geometrie sono diverse (es. slab vs block)
+            if orig_geom is not None and match_geom is not None and orig_geom != match_geom:
+                print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Geometria non corrispondente)")
                 continue
+                
+            # Calcola lo score migliore tra tutti i termini di ricerca su entrambe le colonne
+            score_out = max((difflib.SequenceMatcher(None, term, out_name).ratio() for term in search_terms), default=0.0)
+            score_proc = max((difflib.SequenceMatcher(None, term, proc_name).ratio() for term in search_terms), default=0.0)
+            score = max(score_out, score_proc)
+            
+            # Bonus per dataset "market for"
+            is_market = "market for" in proc_name
+            if is_market:
+                score += 0.05
+                
+            # Penalità/Bonus Industriale
+            if any(term in name_combined for term in ["bark", "sawdust", "shavings"]) and not any(term in original_label for term in ["bark", "sawdust", "shavings"]):
+                score -= 0.2
+            if "sawnwood" in name_combined or "production" in name_combined:
+                score += 0.1
+                
+            if score > best_score:
+                best_score = score
+                best_row = row
 
-            match_rows = df_search[df_search["_flowname_lower"] == match]
-            market_rows = match_rows[match_rows["processname"].str.contains("market for", case=False, na=False)]
-            return market_rows.iloc[0] if not market_rows.empty else match_rows.iloc[0]
+        if best_score >= threshold and best_row is not None:
+            print(f"[DEBUG] Trovato {best_row['outputname']} in {loc} -> APPROVATO (Score: {best_score:.3f} >= {threshold})")
+            return best_row
+        elif best_row is not None:
+            print(f"[DEBUG] Trovato {best_row['outputname']} in {loc} -> Scartato (Score: {best_score:.3f} < {threshold})")
             
         return None
 

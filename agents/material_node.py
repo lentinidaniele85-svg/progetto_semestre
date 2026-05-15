@@ -20,6 +20,7 @@ async def material_ideator(state: AgentState) -> dict:
     system_prompt = ModelFactory.get_system_prompt("semantic_ideation_api").format(
         user_input=state.get("user_input", ""),
         constraints=json.dumps(constraints),
+        geography=constraints.get("geography", "Unknown Geography"),
     )
     
     user_prompt = f"""

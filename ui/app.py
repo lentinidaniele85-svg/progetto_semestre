@@ -456,6 +456,15 @@ with right_col:
     state = st.session_state.graph_state
     phase = state.get("current_phase", "init")
 
+    # Inizializzazione sicura delle variabili di stato
+    lca_results = state.get("lca_results", [])
+    mcda_scores = state.get("mcda_scores", [])
+    bom = state.get("bom", [])
+
+    # Se c'è un errore nello stato, forziamo la fase a 'error' per fermare il rendering
+    if state.get("error") or state.get("error_message"):
+        phase = "error"
+
     # ── Phase ordering helper ────────────────────────────────────────────────
     _PHASE_ORDER = ["init", "constraints", "interview", "workflow", "material", "lca", "mcda", "complete"]
 
@@ -533,7 +542,7 @@ with right_col:
 
         # ── Error banner ─────────────────────────────────────────────────────
         if phase == "error":
-            err_msg = state.get("error_message", "Unknown error.")
+            err_msg = state.get("error_message") or state.get("error", "Unknown error.")
             st.error(f"❌ **Error during analysis:** {err_msg}\n\nPress **Restart Session** to try again.", icon="🔴")
 
         # ── Assumptions ──────────────────────────────────────────────────────
@@ -589,7 +598,6 @@ with right_col:
                 st.caption("The manufacturing workflow will appear here…")
 
             st.subheader("📋 Bill of Materials")
-            bom: list[dict] = state.get("bom", [])
             if bom:
                 _col_map = {
                     "name":            "Component",
@@ -600,8 +608,65 @@ with right_col:
                     "baseline_cost":   "Cost Tier",
                     "lifespan_years":  "Lifespan (yr)",
                 }
-                bom_df = pd.DataFrame(bom)
+                task_type = state.get("constraints", {}).get("task_type", "optimization")
+                display_bom = []
+                for item in bom:
+                    if task_type == "modeling":
+                        mat_row = item.copy()
+                        mat_row["name"] = f"{item.get('name', '')} (Material)"
+                        display_bom.append(mat_row)
+                        
+                        proc = item.get("manufacturing_process")
+                        if proc:
+                            proc_row = item.copy()
+                            proc_row["name"] = f"{item.get('name', '')} (Manufacturing)"
+                            proc_row["material"] = proc
+                            proc_row["functional_role"] = "Processing"
+                            from core.config import PROCESS_IMPACTS
+                            proc_row["baseline_environmental_impact"] = PROCESS_IMPACTS.get(proc, 1.0)
+                            proc_row["baseline_cost"] = 0.0
+                            display_bom.append(proc_row)
+                    else:
+                        display_bom.append(item)
+                
+                if task_type == "modeling":
+                    transport_comp = next((c for c in state.get("lca_results", []) if c.get("component_name") == "Transport"), None)
+                    if transport_comp:
+                        mat_name = transport_comp.get("original_material", "Lorry transport")
+                        amount = transport_comp.get("original_scores", {}).get("amount", "-")
+                        if amount != "-":
+                            mat_name += f" (Amount: {amount:.1f})"
+                        impact = transport_comp.get("original_scores", {}).get("unit_material_impact", 0.0)
+                        
+                        display_bom.append({
+                            "name": "Transport",
+                            "material": mat_name,
+                            "weight_kg": "-",
+                            "functional_role": "Logistics",
+                            "baseline_environmental_impact": impact,
+                            "baseline_cost": 0.0,
+                            "lifespan_years": "-",
+                        })
+                    else:
+                        dist = state.get("logistics_data", {}).get("distance_km", 0.0)
+                        if dist:
+                            from core.config import TRANSPORT_IMPACT_PER_TKM
+                            display_bom.append({
+                                "name": "Transport",
+                                "material": f"Lorry transport ({dist} km)",
+                                "weight_kg": "-",
+                                "functional_role": "Logistics",
+                                "baseline_environmental_impact": TRANSPORT_IMPACT_PER_TKM,
+                                "baseline_cost": 0.0,
+                                "lifespan_years": "-",
+                            })
+                        
+                bom_df = pd.DataFrame(display_bom)
                 bom_df = bom_df.rename(columns={k: v for k, v in _col_map.items() if k in bom_df.columns})
+                if "Weight (kg)" in bom_df.columns:
+                    bom_df["Weight (kg)"] = bom_df["Weight (kg)"].astype(str)
+                if "Lifespan (yr)" in bom_df.columns:
+                    bom_df["Lifespan (yr)"] = bom_df["Lifespan (yr)"].astype(str)
                 _display_cols = [v for k, v in _col_map.items() if v in bom_df.columns]
                 st.dataframe(bom_df[_display_cols], width="stretch", hide_index=True)
             else:
@@ -610,9 +675,6 @@ with right_col:
         # ── Material Alternatives (phase >= material) ─────────────────────
         if _phase_gte(phase, "material"):
             task_type = state.get("constraints", {}).get("task_type", "optimization")
-            if task_type != "modeling":
-                lca_results: list[dict] = state.get("lca_results", [])
-                mcda_scores: list[dict] = state.get("mcda_scores", [])
 
             if lca_results and not mcda_scores:
                 st.subheader("🔬 Material Alternatives (LCA Validated)")
@@ -621,24 +683,24 @@ with right_col:
                         f"**{comp['component_name']}** — original: {comp['original_material']} "
                         f"({comp['original_scores']['environmental_impact']:.3f} {settings.environmental_impact_unit})"
                     ):
-                        rows = []
-                        for alt in comp.get("alternatives", []):
-                            rows.append({
-                                "Alternative": alt["name"],
-                                f"Impact ({settings.environmental_impact_unit})": alt["scores"]["environmental_impact"],
-                                "Energy (MJ)": alt["scores"]["energy_mj"],
-                                "Cost Tier": alt["scores"]["cost_tier"],
-                                "Aesthetic Match": f"{alt['aesthetic_match']:.0%}",
-                                "Structural Match": f"{alt['structural_match']:.0%}",
-                            })
-                        if rows:
-                            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                        if task_type == "modeling":
+                            st.info("Nessuna alternativa cercata in modalità Modeling. Per confrontare diversi materiali e ricevere suggerimenti di miglioramento automatici, utilizza la modalità Optimization.")
+                        else:
+                            rows = []
+                            for alt in comp.get("alternatives", []):
+                                rows.append({
+                                    "Alternative": alt["name"],
+                                    f"Impact ({settings.environmental_impact_unit})": alt["scores"]["environmental_impact"],
+                                    "Energy (MJ)": alt["scores"]["energy_mj"],
+                                    "Cost Tier": alt["scores"]["cost_tier"],
+                                    "Aesthetic Match": f"{alt['aesthetic_match']:.0%}",
+                                    "Structural Match": f"{alt['structural_match']:.0%}",
+                                })
+                            if rows:
+                                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         # ── LCA Chart + MCDA Table (phase >= mcda) ───────────────────────
         if _phase_gte(phase, "mcda"):
-            mcda_scores: list[dict] = state.get("mcda_scores", [])
-            lca_results: list[dict] = state.get("lca_results", [])
-
             if mcda_scores and lca_results:
                 st.subheader("🌍 Environmental Impact: Original vs. Optimised")
                 orig_co2_lookup: dict[str, float] = {

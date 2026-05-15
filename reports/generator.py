@@ -73,11 +73,52 @@ def generate_html_report(state: dict) -> str:
     def _bom_rows() -> str:
         rows = ""
         for item in bom:
-            rows += (
-                f"<tr><td>{item.get('name', '')}</td>"
-                f"<td>{item.get('material', '')}</td>"
-                f"<td>{item.get('weight_kg', '')}</td></tr>"
-            )
+            name = item.get('name', '')
+            mat = item.get('material', '')
+            w = item.get('weight_kg', '')
+            proc = item.get('manufacturing_process', '')
+            
+            if task_type == "modeling":
+                rows += (
+                    f"<tr><td>{name} (Material)</td>"
+                    f"<td>{mat}</td>"
+                    f"<td>{w}</td></tr>"
+                )
+                if proc:
+                    rows += (
+                        f"<tr><td>{name} (Manufacturing)</td>"
+                        f"<td>{proc}</td>"
+                        f"<td>{w}</td></tr>"
+                    )
+            else:
+                rows += (
+                    f"<tr><td>{name}</td>"
+                    f"<td>{mat}</td>"
+                    f"<td>{w}</td></tr>"
+                )
+        
+        # Aggiunta Trasporto alla BOM per modelling
+        if task_type == "modeling":
+            transport_comp = next((c for c in lca_results if c.get("component_name") == "Transport"), None)
+            if transport_comp:
+                mat_name = transport_comp.get("original_material", "Lorry transport")
+                amount = transport_comp.get("original_scores", {}).get("amount", "-")
+                if amount != "-":
+                    mat_name += f" (Amount: {amount:.1f})"
+                rows += (
+                    f"<tr><td>Transport</td>"
+                    f"<td>{mat_name}</td>"
+                    f"<td>-</td></tr>"
+                )
+            else:
+                dist = state.get("logistics_data", {}).get("distance_km", 0.0)
+                if dist:
+                    rows += (
+                        f"<tr><td>Transport</td>"
+                        f"<td>Lorry transport ({dist} km)</td>"
+                        f"<td>-</td></tr>"
+                    )
+                
         return rows
 
     def _opt_rows() -> str:
@@ -339,8 +380,8 @@ def generate_pdf_report(state: dict) -> bytes | None:
     """
     try:
         from weasyprint import HTML  # noqa: PLC0415
-    except Exception as exc:
-        logger.warning("WeasyPrint import failed — PDF export unavailable: %s", exc)
+    except Exception:
+        print("PDF Export disabled (missing dependencies), HTML available")
         return None
 
     html_string = generate_html_report(state)

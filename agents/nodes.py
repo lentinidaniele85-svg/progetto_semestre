@@ -99,7 +99,9 @@ def constraint_extractor(state: AgentState) -> dict:
                 "(Dimensions, Mechanical Load, Usage Environment, Target Lifespan) "
                 "from the product description, along with budget, aesthetics, "
                 "structural requirements, and weight limit. "
-                "CRITICAL RULE: If the input is a Pure Material with a quantity or location (e.g., '1 kg of polypropylene in Europe'), "
+                "CRITICAL RULE: If the input specifies a production location and a material origin (e.g., 'prodotto nella nazione specificata con materiale dall'Europa'), "
+                "you MUST extract the PRODUCTION location into the 'geography' field. The material origin will only be used to select the 'market for' dataset. "
+                "If the input is a Pure Material with a quantity or location (e.g., '1 kg of polypropylene in Europe'), "
                 "you MUST extract the exact weight (e.g., 1.0) into the 'mass' field, and the location into 'geography'. "
                 "Also determine 'task_type'. If the user asks to model or calculate impact (e.g. 'Voglio modellare...', 'Qual è l'impatto di...'), set it to 'modeling'. "
                 "If the user asks to optimize, improve or find sustainable alternatives (e.g. 'Ottimizza...', 'Migliora...', 'Trova alternative...'), set it to 'optimization'. "
@@ -161,6 +163,8 @@ async def lca_validator(state: AgentState) -> dict:
         logistics = state.get("logistics_data", {})
         dist_km = logistics.get("distance_km", 500.0)
         geography = logistics.get("geography", "GLO")
+        
+        has_market_material = False
 
         for orig_comp in (state.get("bom") or []):
             component_name = orig_comp.get("name", "")
@@ -176,9 +180,11 @@ async def lca_validator(state: AgentState) -> dict:
             process_name = orig_comp.get("manufacturing_process", "Injection moulding")
             process_impact = PROCESS_IMPACTS.get(process_name, 1.0)
 
+            task_type = (state.get("constraints") or {}).get("task_type", "optimization")
+            
             # Impatto materiale originale
             thought_log.append(f"Termine tradotto: {original_material}")
-            orig_match = provider.find_closest_match(target_product=original_material, target_geography=geography)
+            orig_match = provider.find_closest_match(target_product=original_material, target_geography=geography, task_type=task_type)
 
             if not orig_match or orig_match.get("environmental_impact") is None:
                 # ── STRICT MODE — MATERIALE ORIGINALE NON TROVATO ───────────
@@ -245,15 +251,17 @@ async def lca_validator(state: AgentState) -> dict:
 
                 mat_impact = orig_match["environmental_impact"]
                 is_market = orig_match.get("is_market", False)  # T02: campo corretto
+                if is_market:
+                    has_market_material = True
                 mat_energy = orig_match.get("energy_mj") or orig_comp.get("estimated_energy_mj", 50.0)
                 mat_cost = orig_match.get("cost_per_kg") or orig_comp.get("estimated_cost_per_kg", 1.0)
 
-            tkm = (mass_kg / 1000.0) * dist_km
-            transport_impact = 0.0 if is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
-            total_orig_impact = (mat_impact + process_impact) * mass_kg + transport_impact
-
-            orig_scores = {
-                "environmental_impact": total_orig_impact,
+            # Separazione dei contributi: Materiale, Processo e poi Trasporto.
+            mat_total_impact = mat_impact * mass_kg
+            proc_total_impact = process_impact * mass_kg
+            
+            orig_scores_mat = {
+                "environmental_impact": mat_total_impact,
                 "unit_material_impact": mat_impact,
                 "energy_mj": mat_energy * mass_kg,
                 "cost_tier": 1 if mat_cost < 1.0 else (2 if mat_cost < 3.0 else (3 if mat_cost < 10.0 else 4)),
@@ -265,7 +273,7 @@ async def lca_validator(state: AgentState) -> dict:
             for alt in component_alts.get("alternatives", []):
                 alt_name = alt["name"]
                 thought_log.append(f"Termine tradotto: {alt_name}")
-                alt_match = provider.find_closest_match(target_product=alt_name, target_geography=geography)
+                alt_match = provider.find_closest_match(target_product=alt_name, target_geography=geography, task_type=task_type)
 
                 if not alt_match or alt_match.get("environmental_impact") is None:
                     # ── STRICT MODE — ALTERNATIVA NON TROVATA ──────────────
@@ -315,11 +323,12 @@ async def lca_validator(state: AgentState) -> dict:
                     alt_energy = alt_match.get("energy_mj") or alt.get("estimated_energy_mj", 50.0)
                     alt_cost = alt_match.get("cost_per_kg") or alt.get("estimated_cost_per_kg", 1.0)
 
-                alt_transport = 0.0 if alt_is_market else (tkm * TRANSPORT_IMPACT_PER_TKM)
-                total_alt_impact = (alt_mat_impact + process_impact) * mass_kg + alt_transport
+                # L'impatto del trasporto è gestito globalmente alla fine.
+                # Qui manteniamo solo l'impatto materiale per il confronto.
+                alt_mat_total = alt_mat_impact * mass_kg
 
                 scores = {
-                    "environmental_impact": total_alt_impact,
+                    "environmental_impact": alt_mat_total,
                     "unit_material_impact": alt_mat_impact,
                     "energy_mj": alt_energy * mass_kg,
                     "cost_tier": 1 if alt_cost < 1.0 else (2 if alt_cost < 3.0 else (3 if alt_cost < 10.0 else 4)),
@@ -336,12 +345,83 @@ async def lca_validator(state: AgentState) -> dict:
                     "scores": scores,
                 })
 
-            lca_results.append({
-                "component_name": component_name,
-                "original_material": original_material,
-                "original_scores": orig_scores,
-                "alternatives": alt_results,
-            })
+            task_type = (state.get("constraints") or {}).get("task_type", "optimization")
+            if task_type == "modeling":
+                lca_results.append({
+                    "component_name": f"{component_name} (Material)",
+                    "original_material": original_material,
+                    "original_scores": orig_scores_mat,
+                    "alternatives": alt_results,
+                })
+                lca_results.append({
+                    "component_name": f"{component_name} (Manufacturing)",
+                    "original_material": process_name,
+                    "original_scores": {
+                        "environmental_impact": proc_total_impact,
+                        "unit_material_impact": process_impact,
+                        "energy_mj": 0.0,
+                        "cost_tier": 1,
+                        "cost_per_kg": 0.0,
+                        "lifespan_years": 10.0,
+                    },
+                    "alternatives": [],
+                })
+            else:
+                orig_scores_mat["environmental_impact"] = mat_total_impact + proc_total_impact
+                lca_results.append({
+                    "component_name": component_name,
+                    "original_material": original_material,
+                    "original_scores": orig_scores_mat,
+                    "alternatives": alt_results,
+                })
+
+        # Aggiunta del componente logistico finale (Passo 6)
+        total_tkm = 0.0
+        for orig_comp in (state.get("bom") or []):
+            total_tkm += (orig_comp.get("weight_kg", 1.0) / 1000.0) * dist_km
+            
+        if has_market_material:
+            market_assumption = (
+                f"Dichiaro l'assunzione: gli {dist_km} km rappresentano il tratto aggiuntivo "
+                f"dal fornitore al sito in {geography}, non incluso nel dataset di mercato"
+            ) if ita else (
+                f"Assumption: the {dist_km} km represent the additional transport "
+                f"from the supplier to the site in {geography}, not included in the market dataset"
+            )
+            assumptions.append(market_assumption)
+            thought_log.append(market_assumption)
+
+        # Ricerca del servizio di trasporto nel DB (no diesel fuel)
+        transport_query = "transport, freight, lorry, unspecified"
+        thought_log.append(f"Ricerca servizio di trasporto nel DB: '{transport_query}'")
+        transport_match = provider.find_closest_match(target_product=transport_query, target_geography="RER")
+        
+        if transport_match and transport_match.get("environmental_impact") is not None:
+            transport_impact_per_tkm = transport_match["environmental_impact"]
+            transport_name = transport_match.get("flowName", transport_query) + f" | {transport_match.get('location', 'RER')}"
+            thought_log.append(f"Servizio trasporto trovato nel DB: {transport_name} ({transport_impact_per_tkm} kgCO2/tkm)")
+        else:
+            # Fallback (non interrompere il workflow)
+            transport_impact_per_tkm = TRANSPORT_IMPACT_PER_TKM
+            transport_name = "transport, freight, lorry | RER (Fallback)"
+            thought_log.append(f"Servizio trasporto non trovato > 0.85. Uso fallback: {transport_impact_per_tkm} kgCO2/tkm")
+
+        transport_impact_total = total_tkm * transport_impact_per_tkm
+        
+        lca_results.append({
+            "component_name": "Transport",
+            "original_material": transport_name,
+            "original_scores": {
+                "environmental_impact": transport_impact_total,
+                "unit_material_impact": transport_impact_per_tkm,
+                "energy_mj": 0.0,
+                "cost_tier": 1,
+                "cost_per_kg": 0.0,
+                "lifespan_years": 10.0,
+                "amount": total_tkm, # Supporto UI opzionale per quantità tkm
+            },
+            "alternatives": [],
+        })
 
         task_type = (state.get("constraints") or {}).get("task_type", "optimization")
         current_phase = "complete" if task_type == "modeling" else "lca"

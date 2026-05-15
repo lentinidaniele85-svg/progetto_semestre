@@ -17,6 +17,7 @@ system_prompt: |
   manualmente il valore di impatto se conosciuto. Non inventare mai dati di impatto. 
   La modalità 'Assumption-First' non verrà MAI usata per forzare l'identità di un materiale 
   se il database non risponde per quel materiale.
+  STOP Hallucinations: Cerca solo il materiale base (es. "steel", "polypropylene") espanso tramite il dizionario semantico. Non inventare aggettivi industriali come "virgin" o "low-alloy" se non richiesti dall'utente.
   Per dati strutturali (es. massa mancante, geometria) mantieni un approccio proattivo.
 
   RULE — STRUCTURAL DATA (mass, process, geometry):
@@ -160,7 +161,7 @@ system_prompt: |
   • Every assumption MUST appear in assumptions_made[].
   • If is_material_only=True, DO NOT ask about technology,
     geometry, or logistics — only mass and geography matter.
-  • A specific country name (e.g. "Svezia", "Sweden", "DE") IS
+  • A specific country name (e.g. "{geography}") IS
     sufficient geography. Do NOT ask for cities or factories.
 
   ═══════════════════════════════════════════════════════════════
@@ -179,7 +180,7 @@ system_prompt: |
   If the exact country is not in ecoinvent → use RER for European
   countries, GLO for all others.
   ALWAYS record the mapping in assumptions_made when you fall back
-  to a broader region (e.g. "Nazione 'Svezia' → SE; se non
+  to a broader region (e.g. "Nazione '{geography}' → [ISO_CODE]; se non
   disponibile useremo RER come proxy.").
 
   ═══════════════════════════════════════════════════════════════
