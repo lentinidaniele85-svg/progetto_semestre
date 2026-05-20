@@ -1,4 +1,5 @@
 import json
+from typing import Optional
 import logging
 # pyrefly: ignore [missing-import]
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -130,6 +131,7 @@ ALWAYS ensure:
         else:
             geography = raw_geography.title() if raw_geography != "Not specified" else "Not specified"
 
+        is_material_only = result.is_material_only
         is_interview_complete = result.is_interview_complete
 
         if not is_interview_complete and result.components:
@@ -174,10 +176,16 @@ ALWAYS ensure:
         bom = []
 
         # T05: Step 4 — Vincolo Geometrico & Fuzzy Match materiali
-        if ita:
-            thought_log.append("Passo 4: Mappatura geometria → processo manifatturiero.")
+        if not is_material_only:
+            if ita:
+                thought_log.append("Passo 4: Mappatura geometria → processo manifatturiero.")
+            else:
+                thought_log.append("Step 4: Mapping geometry → manufacturing process.")
         else:
-            thought_log.append("Step 4: Mapping geometry → manufacturing process.")
+            if ita:
+                thought_log.append("Passo 4: Saltato — input classificato come materiale grezzo (is_material_only=True). Nessun processo manifatturiero aggiunto.")
+            else:
+                thought_log.append("Step 4: Skipped — input classified as raw material (is_material_only=True). No manufacturing process appended.")
 
         for comp_data in result.components or []:
             comp = comp_data.model_dump()
@@ -245,9 +253,13 @@ ALWAYS ensure:
                 comp["material_source"] = best_match["flowName"]
                 comp["unit_impact_value"] = best_match["environmental_impact"]
 
-            # 2. Mapping Geometria → Processo
-            geom = comp.get("geometry", "Pezzi Pieni Complessi")
-            comp["manufacturing_process"] = determine_manufacturing_process(mat, geom)
+            # 2. Mapping Geometria → Processo (solo per prodotti finiti)
+            if not is_material_only:
+                geom = comp.get("geometry") or "Pezzi Pieni Complessi"
+                comp["manufacturing_process"] = determine_manufacturing_process(mat, geom)
+            else:
+                comp["geometry"] = None
+                comp["manufacturing_process"] = None
 
             # Baseline per compatibilità schema
             comp["baseline_environmental_impact"] = comp["unit_impact_value"]
@@ -269,22 +281,56 @@ ALWAYS ensure:
             thought_log.append("Passo 6: Calcolo logistica (tkm).")
         else:
             thought_log.append("Step 6: Logistics calculation (tkm).")
-        mass = result.total_mass_kg or 1.0
-
-        # T08: Distanza di default con assunzione esplicita se non specificata
-        if result.distance_km is not None:
-            dist_km = result.distance_km
-        else:
-            dist_km = 500.0
-            # T08: notifica l'assunzione all'utente
-            assumptions.append(
-                "Logistics distance not specified: using default value 500 km. "
-                "Specify the distance from the supplier for a precise calculation."
+        # ── Massa ────────────────────────────────────────────────────────────────────
+        # Il valore di massa viene dal LLM (result.total_mass_kg).
+        # Se è None significa che il prompt Step 7 non ha ricevuto abbastanza info
+        # per ragionare — guard rail Python di ultima istanza.
+        mass = result.total_mass_kg
+        if mass is None:
+            missing_text = "Non è stato possibile determinare la massa del prodotto.\n"
+            missing_text += "- Qual è la massa totale del prodotto (in kg)?\n"
+            return {
+                "pending_feedback": missing_text,
+                "thought_log": thought_log,
+                "assumptions_list": assumptions,
+                "current_lca_step": 2,
+                "current_phase": "interview",
+            }
+        # ── Distanza/Logistica ────────────────────────────────────────────────────────
+        # L'LLM (tramite il prompt Step 6 aggiornato) è responsabile di:
+        #   A. Estrarre distance_km se dichiarata dall'utente.
+        #   B. Stimare distance_km ragionando su supplier_country + destination_country.
+        #   C. Impostare is_interview_complete=False e chiedere i dati se non li ha.
+        # Il codice Python qui serve solo come guard rail per il caso in cui
+        # il modello non abbia seguito le istruzioni.
+        dist_km: Optional[float] = result.distance_km
+        supplier_country: Optional[str] = result.supplier_country
+        destination_country: Optional[str] = result.destination_country
+        if dist_km is None and not result.is_material_only:
+            # Il LLM avrebbe dovuto o stimare o bloccarsi — se arriviamo qui
+            # significa che il modello non ha rispettato Step 6. Blocco Python.
+            missing_text = "Dati logistici mancanti per il calcolo del trasporto.\n"
+            if not supplier_country:
+                missing_text += "- Da quale paese proviene il materiale/fornitore principale?\n"
+            if not destination_country:
+                missing_text += "- Qual è la nazione di destinazione/assemblaggio?\n"
+            missing_text += (
+                "\nIn alternativa, puoi specificare direttamente la distanza in km "
+                "dal fornitore al sito di produzione."
             )
+            return {
+                "pending_feedback": missing_text,
+                "thought_log": thought_log,
+                "assumptions_list": assumptions,
+                "current_lca_step": 2,
+                "current_phase": "interview",
+            }
 
         tkm = (mass / 1000.0) * dist_km
         logistics = {
-            "geography": geography,
+            "geography": geography,                                      # Nazione di produzione
+            "supplier_country": supplier_country or geography,           # Fallback: usa geography
+            "destination_country": destination_country or geography,
             "distance_km": dist_km,
             "tkm": tkm,
         }

@@ -34,3 +34,6 @@ class AgentState(TypedDict, total=False):
     detected_geometry: str
     logistics_data: dict
     assumptions_list: list[str]
+    interview_attempt_count: int  # Contatore tentativi intervista (inizia a 0)
+    supplier_country: str          # Nazione fornitore estratta
+    destination_country: str       # Nazione destinazione estratta

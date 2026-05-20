@@ -15,6 +15,20 @@ class ConstraintsExtract(BaseModel):
     usage_environment: Optional[str] = Field(default=None, description="Ambiente d'uso (es. indoor, outdoor, umido). 1 dei 4 Pilastri.")
     target_lifespan: Optional[str] = Field(default=None, description="Durata o vita utile attesa. 1 dei 4 Pilastri.")
     task_type: Literal["modeling", "optimization"] = Field(default="optimization", description="Tipo di task: 'modeling' (solo calcolo, niente MCDA) oppure 'optimization' (ricerca materiali migliori)")
+    supplier_country: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nazione di origine del materiale/fornitore (es. 'China', 'Germany'). "
+            "Diverso da geography (nazione di produzione). Usato per il calcolo del trasporto."
+        )
+    )
+    destination_country: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nazione di destinazione/assemblaggio (es. 'Italy'). "
+            "Usato per calcolare la distanza fornitore\u2192sito."
+        )
+    )
 
 
 class BOMComponent(BaseModel):
@@ -38,8 +52,8 @@ class BOMComponent(BaseModel):
         description="Expected useful lifespan of this component in years.",
     )
     material_source: str = Field(description="Il nome esatto del materiale derivato dal dataset.")
-    geometry: str = Field(description="La geometria del componente (es. Corpi Cavi, Pezzi Pieni Complessi, Film, Profili/Tubi).")
-    manufacturing_process: str = Field(description="Il processo di produzione forzato tramite tabella geometrie.")
+    geometry: Optional[str] = Field(default=None, description="Geometry of the component (e.g. Corpi Cavi, Pezzi Pieni Complessi, Film, Profili/Tubi). MUST be None when is_material_only=True — do NOT invent a geometry for raw materials.")
+    manufacturing_process: Optional[str] = Field(default=None, description="Manufacturing process derived from geometry mapping (e.g. 'injection moulding', 'blow moulding'). MUST be None when is_material_only=True — do NOT hallucinate a process for raw materials.")
     unit_impact_value: float = Field(default=0.0, description="Il valore di impatto unitario (es: kg CO2/kg).")
     estimated_cost_per_kg: Optional[float] = Field(default=None, description="The estimated market price per kg found online.")
     estimated_energy_mj: Optional[float] = Field(default=None, description="The estimated energy in MJ required found online.")
@@ -87,6 +101,22 @@ class WorkflowAndBOMResponse(BaseModel):
     assumptions_made: List[str] = Field(default_factory=list, description="Assunzioni fatte dall'IA (es. materiale inferito).")
     workflow_steps: List[WorkflowStep] = Field(default_factory=list, description="List of generic sequential manufacturing processes.")
     components: List[BOMComponent] = Field(default_factory=list, description="Componenti del prodotto con massa, geometria e materiale.")
+    supplier_country: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nazione di origine del fornitore del materiale principale. "
+            "Se esplicitata dall'utente, usata per cercare il dataset di trasporto corretto. "
+            "NON inferire se non dichiarata."
+        )
+    )
+    destination_country: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nazione di destinazione/assemblaggio. "
+            "NON inferire se non dichiarata. "
+            "Se nota, usata con supplier_country per stimare distance_km."
+        )
+    )
 
 class MaterialIdeationResponse(BaseModel):
     components: List[ComponentAlternatives] = Field(default_factory=list, description="List of sustainable material alternatives for each component (FASE 3 and 4).")
