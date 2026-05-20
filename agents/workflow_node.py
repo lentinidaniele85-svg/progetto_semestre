@@ -134,62 +134,66 @@ ALWAYS ensure:
         is_material_only = result.is_material_only
         is_interview_complete = result.is_interview_complete
 
-        if not is_interview_complete and result.components:
-            all_matched = True
-            for comp_data in result.components:
-                comp_dict = comp_data.model_dump() if hasattr(comp_data, "model_dump") else (comp_data.dict() if hasattr(comp_data, "dict") else comp_data)
-                mat = comp_dict.get("material", "unknown") if isinstance(comp_dict, dict) else "unknown"
-                match = provider.find_closest_match(mat, location=geography, threshold=0.8, task_type=state.get("constraints", {}).get("task_type", "optimization"))
-                if not match:
-                    all_matched = False
-                    break
-            if all_matched:
-                if ita:
-                    thought_log.append("Trovate corrispondenze con >80% di similarità. Ignoro richiesta intervista.")
-                else:
-                    thought_log.append("Found matches with >80% similarity. Overriding interview request.")
-                is_interview_complete = True
-
-        # Leggi il contatore dai tentativi precedenti
         attempt_count = state.get("interview_attempt_count", 0)
         
-        if not is_interview_complete:
-            attempt_count += 1
+        # 1. Determina dati mancanti
+        missing = []
+        mass = result.total_mass_kg
+        dist_km = result.distance_km
+        
+        if mass is None and not is_material_only:
+            missing.append("massa")
+        if geography.lower() in ["not specified", "unknown geography", ""]:
+            missing.append("luogo (geografia)")
+        # La distanza viene chiesta al primo tentativo di intervista.
+        # Se l'utente non la fornisce, al secondo tentativo si usa has_transport=False
+        # → il sistema sceglie automaticamente il dataset 'market for'.
+        if dist_km is None and not is_material_only and attempt_count == 0:
+            missing.append("distanza di trasporto (km)")
             
-            if attempt_count >= 3:
-                # Terzo tentativo fallito: applica 500 km e procedi con avviso
-                dist_km = 500.0
-                mass = result.total_mass_kg or 1.0
-                thought_log.append(
-                    f"⚠ Intervista fallita dopo {attempt_count} tentativi. "
-                    f"Applicati valori di default: massa={mass}kg, distanza=500km."
-                )
-                assumptions.append(
-                    f"AVVISO: Dati logistici non forniti dopo {attempt_count} richieste. "
-                    f"Usati valori di default (massa={mass}kg, distanza=500km). "
-                    f"I risultati LCA potrebbero non essere accurati."
-                )
-                # NON fare return — procedi con i default
-                is_interview_complete = True
-                result.total_mass_kg = mass
-                result.distance_km = dist_km
-            else:
-                # Continua a chiedere
+        needs_interview = len(missing) > 0 or not is_interview_complete
+        
+        if needs_interview:
+            if attempt_count == 0:
+                attempt_count += 1
+                msg = ""
+                if missing:
+                    msg = f"Mancano alcune informazioni importanti: {', '.join(missing)}. Puoi fornirle?\n"
+                
+                for q in result.interview_questions:
+                    msg += f"- {q}\n"
+                    
+                if not msg.strip():
+                    msg = "Mi mancano alcune informazioni per poter procedere. Puoi fornire maggiori dettagli?"
+                
                 if ita:
-                    thought_log.append("Interruzione: dati mancanti. In attesa di risposta utente.")
+                    thought_log.append("Interruzione: dati mancanti al primo tentativo. In attesa di risposta utente.")
                 else:
                     thought_log.append("Interrupt: missing data. Waiting for user response.")
-                missing_text = "Mi mancano alcune informazioni per poter procedere:\n"
-                for q in result.interview_questions:
-                    missing_text += f"- {q}\n"
+                
                 return {
-                    "pending_feedback": missing_text,
+                    "pending_feedback": msg.strip(),
                     "thought_log": thought_log,
                     "assumptions_list": assumptions,
                     "current_lca_step": 2,
                     "current_phase": "interview",
                     "interview_attempt_count": attempt_count,
                 }
+            else:
+                # Secondo tentativo: fai assunzioni per i dati ancora mancanti
+                if mass is None and not is_material_only:
+                    mass = 1.0
+                    result.total_mass_kg = 1.0
+                    assumptions.append("Massa non fornita dall'utente, assunto default di 1.0 kg.")
+                if geography.lower() in ["not specified", "unknown geography", ""]:
+                    # Nessun luogo specificato: il DB cercherà RER poi GLO automaticamente
+                    geography = "RER"
+                    assumptions.append("Luogo non fornito dall'utente. Utilizzo RER (Europa) come proxy; se non trovato il DB usa GLO (Global).")
+                # Distanza: se ancora mancante al 2° tentativo, NON viene assegnato un default.
+                # has_transport=False → il sistema usa i dataset 'market for',
+                # che includono già la logistica media al punto di consegna.
+                if dist_km is None:
+                    assumptions.append("Distanza non fornita dall'utente. Utilizzati dataset 'market for' che includono la logistica media.")
 
         # T05: Step 3 — Selezione Materiale (inferenza LLM completata)
         if ita:
@@ -218,7 +222,13 @@ ALWAYS ensure:
             comp["material"] = mat
 
             # 1. Fuzzy Match del materiale nel DataSet.xlsx
-            best_match = provider.find_closest_match(mat, location=geography, task_type=state.get("constraints", {}).get("task_type", "optimization"))
+            has_transport = dist_km is not None and dist_km > 0
+            best_match = provider.find_closest_match(
+                mat, 
+                location=geography, 
+                task_type=state.get("constraints", {}).get("task_type", "optimization"),
+                has_transport=has_transport
+            )
 
             if not best_match or best_match.get("environmental_impact") is None:
                 # ── STRICT MODE — MATERIAL NOT FOUND ─────────────────────────
@@ -304,56 +314,18 @@ ALWAYS ensure:
         workflow = [w.model_dump() for w in (result.workflow_steps or [])]
 
         # T05: Step 6 — Calcolo Logistica
-        # ── Massa ────────────────────────────────────────────────────────────────────
-        # Il valore di massa viene dal LLM (result.total_mass_kg).
-        # Se è None significa che il prompt Step 7 non ha ricevuto abbastanza info
-        # per ragionare — guard rail Python di ultima istanza.
-        mass = result.total_mass_kg
-        if mass is None:
-            missing_text = "Non è stato possibile determinare la massa del prodotto.\n"
-            missing_text += "- Qual è la massa totale del prodotto (in kg)?\n"
-            return {
-                "pending_feedback": missing_text,
-                "thought_log": thought_log,
-                "assumptions_list": assumptions,
-                "current_lca_step": 2,
-                "current_phase": "interview",
-            }
-        # ── Distanza/Logistica ────────────────────────────────────────────────────────
-        # L'LLM (tramite il prompt Step 6 aggiornato) è responsabile di:
-        #   A. Estrarre distance_km se dichiarata dall'utente.
-        #   B. Stimare distance_km ragionando su supplier_country + destination_country.
-        #   C. Impostare is_interview_complete=False e chiedere i dati se non li ha.
-        # Il codice Python qui serve solo come guard rail per il caso in cui
-        # il modello non abbia seguito le istruzioni.
+        mass = result.total_mass_kg or 0.0
+        
         dist_km: Optional[float] = result.distance_km
         supplier_country: Optional[str] = result.supplier_country
         destination_country: Optional[str] = result.destination_country
-        if dist_km is None and not result.is_material_only:
-            # Il LLM avrebbe dovuto o stimare o bloccarsi — se arriviamo qui
-            # significa che il modello non ha rispettato Step 6. Blocco Python.
-            missing_text = "Dati logistici mancanti per il calcolo del trasporto.\n"
-            if not supplier_country:
-                missing_text += "- Da quale paese proviene il materiale/fornitore principale?\n"
-            if not destination_country:
-                missing_text += "- Qual è la nazione di destinazione/assemblaggio?\n"
-            missing_text += (
-                "\nIn alternativa, puoi specificare direttamente la distanza in km "
-                "dal fornitore al sito di produzione."
-            )
-            return {
-                "pending_feedback": missing_text,
-                "thought_log": thought_log,
-                "assumptions_list": assumptions,
-                "current_lca_step": 2,
-                "current_phase": "interview",
-            }
-
+        
         dist_km = dist_km or 0.0
+        log_type = "stimati o assunti" if result.distance_km is None else "dichiarati dall'utente"
         thought_log.append(
             f"Calcolo logistico: {mass:.2f} kg × {dist_km:.0f} km "
             f"= {(mass/1000.0*dist_km):.4f} tkm "
-            f"({'stimati' if result.distance_km is None else 'dichiarati dall\\'utente'})."
+            f"({log_type})."
         )
         tkm = (mass / 1000.0) * dist_km
         logistics = {

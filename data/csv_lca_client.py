@@ -316,7 +316,8 @@ class CSVLcaClient(LCADataProvider):
         threshold: float = 0.65,
         target_product: Optional[str] = None,
         target_geography: Optional[str] = None,
-        task_type: str = "optimization"
+        task_type: str = "optimization",
+        has_transport: Optional[bool] = None
     ) -> Optional[dict]:
         """Find the closest matching material using a 3-stage search logic.
         
@@ -334,7 +335,7 @@ class CSVLcaClient(LCADataProvider):
         exact_loc = actual_location.strip() if actual_location else ""
         canonical_loc = _normalise_location(actual_location)
 
-        cache_key = f"{label_lower}__{exact_loc}__{canonical_loc}_semantic_{task_type}"
+        cache_key = f"{label_lower}__{exact_loc}__{canonical_loc}_semantic_{task_type}_{has_transport}"
         if cache_key in self._match_cache:
             return self._match_cache[cache_key]
 
@@ -370,7 +371,7 @@ class CSVLcaClient(LCADataProvider):
                 print(f"[DEBUG] Nessun match in {geographies_to_try[i-1]}. Passo a {geo}...")
                 
             is_fallback = (geo != canonical_loc) if canonical_loc else False
-            row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.85, self._df, require_virgin=True)
+            row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.85, self._df, require_virgin=True, has_transport=has_transport)
             if row is not None:
                 result = self._build_result(row, location_fallback_used=is_fallback, requested_location=exact_loc, pass_number=1)
                 self._match_cache[cache_key] = result
@@ -379,7 +380,7 @@ class CSVLcaClient(LCADataProvider):
         # Pass 2: Fallback Standard se non esiste materiale virgin (soglia 0.70)
         for i, geo in enumerate(geographies_to_try):
             is_fallback = (geo != canonical_loc) if canonical_loc else False
-            row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.70, self._df, require_virgin=False)
+            row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.70, self._df, require_virgin=False, has_transport=has_transport)
             if row is not None:
                 result = self._build_result(row, location_fallback_used=is_fallback, requested_location=exact_loc, pass_number=2)
                 self._match_cache[cache_key] = result
@@ -409,7 +410,7 @@ class CSVLcaClient(LCADataProvider):
     def _search_best_match(
         self, search_terms: List[str], original_label: str, loc: str, 
         task_type: str, threshold: float, base_df: pd.DataFrame,
-        require_virgin: bool = False
+        require_virgin: bool = False, has_transport: Optional[bool] = None
     ) -> Optional[pd.Series]:
         """Return the best-matching DataFrame row evaluating all semantic terms with dynamic filters."""
         df_search = self._get_location_subset(loc, base_df)
@@ -448,14 +449,9 @@ class CSVLcaClient(LCADataProvider):
                 ["recycled", "riciclato", "recycling", "riciclo", "secondary", "secondario"]
             )
             
-            if require_virgin and not user_wants_recycled:
+            if not user_wants_recycled:
                 if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b", name_combined):
-                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Virgin-First Enforced)")
-                    continue
-            elif not user_wants_recycled and task_type == "optimization":
-                # In optimization mode senza richiesta riciclato: filtra waste nei metalli
-                if is_metal and re.search(r"\bwaste\b|\bscrap\b|\bscarto\b", name_combined):
-                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Metallo: waste in optimization)")
+                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Waste Assoluto)")
                     continue
                     
             if is_metal:
@@ -561,9 +557,15 @@ class CSVLcaClient(LCADataProvider):
             penalty_terms = ["pipe", "tube", "welding", "extrusion", "drawing", "wire", "trawler", "seiner", "liner", "vessel", "ship", "vehicle", "machinery", "infrastructure", "forging", "processing"]
             
             if is_market_for_material:
-                score += 0.3
+                if has_transport is True:
+                    score -= 0.3 # Penalize market dataset if transport is already provided
+                else:
+                    score += 0.3 # Boost market dataset if no transport is provided
             elif any(term in name_combined for term in bonus_terms_non_market):
-                score += 0.2   # Bonus ridotto per altri indicatori di qualità
+                if has_transport is True:
+                    score += 0.4 # Boost production dataset if transport is provided
+                else:
+                    score += 0.2 # Standard bonus
                 
             if any(term in name_combined for term in penalty_terms):
                 score -= 0.5

@@ -1,38 +1,141 @@
-# Architettura Cognitiva e Logica dell'AI
+# Logica AI — Sustainable Product Optimization Agent
 
-Il progetto "Sustainable Product Optimization" implementa un **Agente Neuro-Simbolico** progettato per assistere ingegneri e designer nell'ottimizzazione sostenibile dei materiali di un prodotto.
+Il sistema implementa un **Agente Neuro-Simbolico** per l'analisi LCA (Life Cycle Assessment) di prodotti industriali.
 
-## 1. Il Paradigma Neuro-Simbolico
-Il sistema non è un semplice chatbot basato solo sull'intelligenza artificiale (LLM), ma divide le responsabilità tra due "motori" complementari:
-- **Il Motore Neurale (LLM)**: Gestisce la semantica. Si occupa di comprendere il testo dell'utente, estrarre i vincoli ingegneristici, destrutturare un prodotto complesso in una distinta base (BOM - Bill of Materials) e formulare ipotesi sui materiali.
-- **Il Motore Simbolico (Python/Deterministico)**: Gestisce la logica rigida. Si occupa di eseguire le valutazioni matematiche, mappare inflessibilmente la geometria ai processi manifatturieri, interrogare il database LCA (Life Cycle Assessment) e calcolare gli impatti ambientali (es. tonnellate-chilometro per i trasporti) senza possibilità di allucinazione.
+---
 
-> **Regola d'Oro:** L'LLM *non ha mai* l'autorità di inventare numeri riguardanti l'impatto ambientale o le proprietà fisiche. È confinato all'ideazione, mentre Python verifica i dati con il dataset locale.
+## 1. Paradigma Neuro-Simbolico
 
-## 2. L'Orchestrazione con LangGraph
-L'intero processo "mentale" dell'IA è gestito tramite **LangGraph**, una libreria che permette di creare flussi ciclici (grafi) per agenti autonomi.
-1. **Stato Condiviso (`AgentState`)**: Ad ogni passo, i nodi leggono e scrivono su una "memoria" centrale tipizzata (il Pydantic TypedDict) che contiene la distinta base, i risultati LCA e la cronologia della conversazione.
-2. **Interrupts (Human-in-the-loop)**: Il grafo ha la capacità di "mettersi in pausa". Se l'IA si accorge che mancano informazioni critiche, ferma l'esecuzione e restituisce il controllo alla UI, ponendo domande mirate all'utente per completare il quadro logico (Gap Analysis).
-3. **Structured Outputs**: L'IA comunica con il motore Python esclusivamente emettendo JSON validati tramite Pydantic (`agents/schemas.py`). Se il JSON non rispetta le chiavi richieste, viene rifiutato.
+Il sistema divide le responsabilità tra due motori complementari:
 
-## 3. Il Flusso Logico a 7 Passi
-L'interazione è strutturata in un ragionamento a imbuto:
+| Motore | Tecnologia | Responsabilità |
+|--------|-----------|---------------|
+| **Neurale** | LLM (OpenRouter) | Comprensione testo, estrazione vincoli, generazione BOM, inferenza materiali |
+| **Simbolico** | Python deterministico | Calcoli LCA, fuzzy matching DB, regole market for, filtri waste, calcolo tkm |
 
-1. **Analisi Entità**: Il sistema analizza l'input per capire se l'oggetto in questione è un "Materiale Grezzo" (es. poliuretano puro) o un "Prodotto Complesso" (es. una sedia).
-2. **Lookup Aggregato**: Controlla nel dataset LCA se il prodotto intero ha già un'impronta calcolata e nota, bypassando fasi inutili.
-3. **Selezione Materiale (Inferenza)**: Se il prodotto è complesso e l'utente non specifica i materiali, l'LLM fa una deduzione tecnica (es. plastica, alluminio) e la registra in una lista pubblica di assunzioni (`assumptions_list`).
-4. **Vincolo Geometrico (Mapping)**: L'LLM assegna a ogni componente una Geometria (es. *Corpi Cavi*, *Film*). Il codice Python mappa questa astrazione a un processo di produzione noto (es. *Injection Moulding*).
-5. **Scomposizione BOM**: L'oggetto viene scomposto nei suoi sotto-componenti primari, creando la struttura dati della distinta base.
-6. **Calcolo Logistica**: Estrazione dei dati geografici. Python calcola il carico logistico ($tkm = (massa\_kg / 1000) \times distanza\_km$). Il sistema controlla che non ci siano doppi conteggi logistici per i dataset di tipo "market".
-7. **Validazione e Ricerca Gerarchica**: Se la copertura dati non corrisponde esattamente, interviene la Ricerca Gerarchica Filtrata sul file `DataSet.xlsx`. Questa opera in due fasi:
-    - **Product First**: Si esegue un match testuale rigoroso unicamente sul nome del prodotto per garantire coerenza tipologica (es. non si confonde calcestruzzo con arachidi).
-    - **Geography Filter**: Si filtra la rosa dei candidati esigendo la medesima Nazione/Area (`target_geography`), accettando fallbacks globali (RER, GLO) solo se strettamente necessari.
+> **Regola d'Oro:** L'LLM non ha mai l'autorità di inventare numeri di impatto ambientale. È confinato all'ideazione; Python verifica i dati con il dataset ecoinvent locale (`DataSet.xlsx`).
 
-## 4. MCDA (Multi-Criteria Decision Analysis)
-Dopo aver ideato le alternative più sostenibili, interviene un algoritmo MCDA che stila una classifica oggettiva. Non valuta solo la CO₂, ma peserà:
-- **Costo** (€/kg)
-- **Energia Implicata** (MJ)
-- **Impatto Ambientale** (kg CO₂ eq)
-- **Consumo d'Acqua** (L)
+---
 
-Questi pesi determinano la "Migliore Alternativa" bilanciata, mostrando all'utente sia la variante ultra-ecologica, sia quella economica che riduce parzialmente l'impatto.
+## 2. Il Flusso Logico a 7 Passi (System Prompt)
+
+L'agente segue la pipeline definita nel file `AI LCA modelling - System Prompt 1.docx`:
+
+| Passo | Nome | Descrizione |
+|-------|------|-------------|
+| 1 | **Analisi Entità** | Materiale grezzo vs prodotto complesso (`is_material_only`) |
+| 2 | **Lookup Aggregato** | Verifica se esiste già un dataset ecoinvent per il prodotto intero |
+| 3 | **Selezione Materiale** | Inferenza LLM per esclusione tecnica; ogni inferenza va in `assumptions_list` |
+| 4 | **Vincolo Geometrico** | Geometria → processo manifatturiero (mapping deterministico Python) |
+| 5 | **Scomposizione BOM** | Generazione distinta base per componenti |
+| 6 | **Calcolo Logistica** | `tkm = (massa_kg / 1000) × distanza_km`; anti double-counting market |
+| 7 | **Gap Analysis** | Controllo dati mancanti → interview o assunzioni autonome |
+
+---
+
+## 3. Regole di Dataset: market for vs production
+
+La scelta tra dataset `market for [material]` e `[material] production` è deterministica, basata su `has_transport`:
+
+```
+has_transport = (dist_km is not None and dist_km > 0)
+```
+
+| Situazione | has_transport | Dataset scelto |
+|------------|--------------|----------------|
+| Nessuna distanza specificata | `False` | `market for [material]` (include logistica media) |
+| Distanza esplicita (es. 800 km) | `True` | `[material] production` (+ trasporto separato) |
+| `dist_km = None` | `False` | `market for [material]` |
+
+**Razionale (da System Prompt):** Il dataset `market for` include già una quota di trasporto medio al punto di consegna. Se si aggiunge una distanza esplicita questa è un tratto *aggiuntivo e specifico*, non coperto dal dataset di mercato.
+
+**Implementazione:** `csv_lca_client.py → _search_best_match()`:
+- `is_market_for_material` and `has_transport=False` → bonus `+0.3` sullo score
+- `is_market_for_material` and `has_transport=True` → penalità `−0.3` sullo score
+- `[material] production` and `has_transport=True` → bonus `+0.4`
+
+---
+
+## 4. Filtro Waste Assoluto
+
+Il sistema **non restituisce mai** dataset con `waste`, `scrap` o `scarto` nel nome (a meno che l'utente non chieda esplicitamente materiali riciclati).
+
+```python
+if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b", name_combined):
+    continue  # scartato prima del calcolo score
+```
+
+Verificato su 27 combinazioni (3 materiali × 3 geografie × 3 valori `has_transport`) — 0 eccezioni.
+
+---
+
+## 5. Interview Flow (Passo 7 — Gap Analysis)
+
+L'agente gestisce i dati mancanti con una logica a due tentativi:
+
+### 1° Tentativo (`attempt_count == 0`)
+Se mancano: **massa**, **luogo** o **distanza** (solo per prodotti, non materiali puri) → il sistema chiede all'utente tramite `pending_feedback`:
+
+```
+"Mancano alcune informazioni importanti: massa, luogo (geografia),
+ distanza di trasporto (km). Puoi fornirle?"
+```
+
+- `current_phase = "interview"`
+- Il grafo si interrompe (HITL — Human In The Loop)
+- La risposta dell'utente viene concatenata a `user_input` da `human_feedback_processor`
+
+### 2° Tentativo (`attempt_count == 1`)
+Se i dati mancano ancora → **assunzioni autonome** (non si blocca più):
+
+| Campo mancante | Assunzione |
+|---------------|-----------|
+| Massa | `1.0 kg` |
+| Luogo | `RER` (Europa) |
+| Distanza | nessun default — `has_transport=False` → usa `market for` |
+
+> **Nota:** La distanza non ha un default numerico perché il sistema non può inventare chilometri. Invece, l'assenza di distanza è gestita implicitamente con `market for`.
+
+### Materiali puri (`is_material_only=True`)
+Per i materiali puri la distanza **non viene mai chiesta** (passi 2-6 del system prompt non si applicano).
+
+---
+
+## 6. Ricerca nel DB — Logica Multi-Stadio
+
+`csv_lca_client.find_closest_match()` opera in tre stadi:
+
+1. **Espansione Semantica:** il termine di ricerca viene espanso con sinonimi industriali (es. `acciaio` → `["steel", "cast iron"]`)
+2. **Fuzzy Match con Filtro Dinamico:** difflib + filtri (waste, metallo/plastica, penalty prodotti finiti)
+3. **Fallback Geografico:** gerarchia `[location] → RER → GLO → RoW`
+
+**Pass 1 (soglia 0.85):** solo materiali "virgin" (no waste/scrap)  
+**Pass 2 (soglia 0.70):** fallback standard se non esiste materiale vergine
+
+---
+
+## 7. Calcolo LCA Deterministico
+
+Formula in `agents/nodes.py → lca_validator()`:
+
+```
+Impatto_Totale = (Impatto_Materiale × Massa_kg)
+               + (Impatto_Processo × Massa_kg)
+               + (tkm × Impatto_Trasporto_per_tkm)
+```
+
+**Anti double-counting logistico:**
+- Componenti con dataset `market for` → trasporto già incluso nel dataset → nessun tkm aggiuntivo (o solo per il tratto extra)
+- Mix market/non-market → tkm calcolato solo per i componenti non-market
+
+---
+
+## 8. MCDA (Multi-Criteria Decision Analysis)
+
+Dopo la generazione delle alternative (`material_ideator`), l'algoritmo MCDA calcola:
+
+```
+score = Δ_CO2 × w_co2 + Δ_costo × w_cost + Δ_energia × w_energy
+```
+
+I pesi (`w_co2`, `w_cost`, `w_energy`) sono configurabili in `core/config.py`. L'alternativa con score più alto viene presentata come "migliore scelta bilanciata".

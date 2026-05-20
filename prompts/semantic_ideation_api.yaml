@@ -153,68 +153,17 @@ system_prompt: |
   it as a single component and note any possible accessories
   (screws, rubber feet) as a gap in assumptions_made.
 
-  Step 6 — Logistica (DATI OBBLIGATORI — NON INFERIRE)
+  Step 6 — Logistica
   ─────────────────────────────────────────────────────
-  La logistica richiede due dati FONDAMENTALI che NON possono essere inventati:
-    A. Nazione del fornitore del materiale (supplier_country)
-    B. Distanza di trasporto (distance_km) OPPURE nazione di destinazione (destination_country)
-  REGOLA ASSOLUTA — Non applicare default silenziosi per la logistica:
-    - Se l'utente NON specifica supplier_country → imposta is_interview_complete=False
-      e inserisci in interview_questions: "Da quale paese/regione proviene il materiale
-      principale (es. acciaio dalla Cina, plastica dall'Europa)?"
-    - Se l'utente NON specifica né distance_km né destination_country → aggiungi in
-      interview_questions: "Qual è la distanza (in km) dal fornitore al sito di
-      produzione, oppure la nazione di destinazione/assemblaggio?"
-    - ECCEZIONE: Se is_material_only=True (solo materiale grezzo senza processo
-      manifatturiero), i dati logistici non sono necessari. Salta questa fase.
-    - Se l'utente specifica distance_km esplicitamente → estrailo in distance_km
-      e NON chiedere altro.
-    - Se l'utente specifica supplier_country E destination_country ma NON distance_km
-      → RAGIONA sulla distanza usando la tua conoscenza geografica:
-        • Pensa alla distanza stradale/marittima realistica tra i due paesi.
-        • Considera il mezzo di trasporto più probabile per quella rotta
-          (es. container via mare tra Cina e Italia, camion tra Germania e Italia).
-        • Registra esplicitamente il ragionamento in assumptions_made, ad esempio:
-          "Stima distanza Cina→Italia: ~9.000 km via mare (container shipping).
-           Basato su rotte commerciali standard. Fornire distanza esatta se nota."
-        • Imposta distance_km con il valore stimato.
-        • NON usare un numero fisso generico (es. 500) senza ragionamento.
-  NON aggiungere mai un valore di default (es. 500 km) senza ragionamento
-  esplicito e dichiarazione dell'assunzione in assumptions_made.
+  Se l'utente descrive un tratto di trasporto specifico (es. 'trasportato per 800 km in camion'), aggiungilo come processo separato in workflow_steps.
+  Se l'utente NON specifica il trasporto, NON inferire o aggiungere processi di trasporto. Sarà il sistema (o i dataset di mercato) a gestire la logistica predefinita.
 
   Step 7 — Completamento e Verifica Finale
   ─────────────────────────────────────────────────
-  Dopo i passi 1-6, verifica i seguenti dati fondamentali:
-  ✔ Massa nota?
-    SÌ (nel constraints o nell'input) → usa quel valore. NON chiedere di nuovo.
-    NO → BLOCCO OBBLIGATORIO. Imposta is_interview_complete=False.
-         Aggiungi in interview_questions:
-         "Qual è la massa totale del prodotto (in kg)?"
-         Motivazione: la massa moltiplica linearmente ogni impatto LCA.
-         Un valore errato invalida l'intero calcolo.
-  ✔ Nazione di produzione (geography) nota?
-    SÌ → usa quel valore.
-    NO → BLOCCO OBBLIGATORIO. Imposta is_interview_complete=False.
-         Aggiungi in interview_questions:
-         "In quale paese viene prodotto/assemblato l'oggetto?"
-         Motivazione: il dataset ecoinvent è geo-specifico.
-         Usare RER invece di CN o US produce errori sistematici.
-  ✔ Dati logistici presenti? (verificati in Step 6)
-    Se is_material_only=True → salta (logistica non applicabile).
-    Se mancano → BLOCCO (già gestito in Step 6).
-  ✔ Materiale noto?
-    SÌ → usa (già gestito in Step 3).
-    NO → PUOI inferire per esclusione tecnica (Step 3). Registra l'assunzione.
-         Il materiale è l'UNICO dato fondamentale per cui è consentita l'inferenza.
-  REGOLE FINALI:
-    • is_interview_complete=True SOLO SE massa, geography, E dati logistici
-      sono tutti noti (o is_material_only=True).
-    • Se is_interview_complete=False, interview_questions DEVE contenere
-      almeno una domanda precisa.
-    • NESSUNA domanda ripetuta: se il dato è già in constraints o in
-      [User Interview Response], NON chiedere di nuovo.
-    • Geometria/processo mancanti → puoi inferire (non bloccare).
-    • Materiale mancante → puoi inferire (non bloccare).
+  Prima di proporre il modello finale, verifica se mancano dati fondamentali: massa, luogo (geography) o distanza di trasporto.
+  Se manca qualcosa, aggiungi le domande in `interview_questions` e imposta `is_interview_complete=False`.
+  NON bloccare forzatamente la generazione se l'utente non risponde: il sistema gestirà un meccanismo a tentativi e al secondo giro chiederà a te (o applicherà in automatico) di procedere con assunzioni (es. RER per geography, 1kg per massa).
+  Quindi tu compila le domande, ma fai sempre del tuo meglio per estrarre la BOM provvisoria.
 
   ═══════════════════════════════════════════════════════════════
   GEOGRAPHIC CODES — ecoinvent Reference
