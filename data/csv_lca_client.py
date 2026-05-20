@@ -94,26 +94,62 @@ _CATEGORY_COST: List[Tuple[Tuple[str, ...], float]] = [
 _DEFAULT_COST_PER_KG = 1.0  # fallback when no category matches
 
 
-_SEMANTIC_SYNONYMS: dict[str, List[str]] = {
-    "acciaio": ["steel", "cast iron", "ferro"],
-    "steel": ["steel", "cast iron"],
-    "alluminio": ["aluminum", "aluminium", "alloy"],
-    "aluminum": ["aluminum", "aluminium", "alloy"],
-    "aluminium": ["aluminum", "aluminium", "alloy"],
-    "plastica": ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe"],
-    "plastic": ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe"],
-    "vetro": ["glass", "silica"],
-    "glass": ["glass", "silica"],
-    "legno": ["wood", "timber", "plywood", "mdf", "board"],
-    "wood": ["wood", "timber", "plywood", "mdf", "board"],
-    "rame": ["copper"],
-    "copper": ["copper"],
-    "ottone": ["brass"],
-    "brass": ["brass"],
-    "ferro": ["iron", "cast iron", "steel"],
-    "iron": ["iron", "cast iron", "steel"],
-    "titanio": ["titanium"],
-    "titanium": ["titanium"],
+_SEMANTIC_SYNONYMS: dict[str, list[str]] = {
+    # Metalli
+    "acciaio":    ["steel", "cast iron", "ferro"],
+    "steel":      ["steel", "cast iron"],
+    "alluminio":  ["aluminum", "aluminium", "alloy"],
+    "aluminum":   ["aluminum", "aluminium", "alloy"],
+    "aluminium":  ["aluminum", "aluminium", "alloy"],
+    "rame":       ["copper"],
+    "copper":     ["copper"],
+    "ottone":     ["brass"],
+    "brass":      ["brass"],
+    "ferro":      ["iron", "cast iron", "steel"],
+    "iron":       ["iron", "cast iron", "steel"],
+    "titanio":    ["titanium"],
+    "titanium":   ["titanium"],
+    # Polimeri generici
+    "plastica":   ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe"],
+    "plastic":    ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe"],
+    # Polimeri specifici
+    "polipropilene": ["polypropylene", "pp"],
+    "polietilene":   ["polyethylene", "hdpe", "ldpe", "pe"],
+    "pla":           ["polylactic acid", "pla", "bioplastic"],
+    "abs":           ["acrylonitrile butadiene styrene", "abs"],
+    "hdpe":          ["polyethylene", "hdpe", "high density polyethylene"],
+    "ldpe":          ["polyethylene", "ldpe", "low density polyethylene"],
+    # Vetro / minerali
+    "vetro":      ["glass", "silica"],
+    "glass":      ["glass", "silica"],
+    "calcestruzzo": ["concrete", "cement", "mortar"],
+    "cemento":    ["cement", "concrete"],
+    "concrete":   ["concrete", "cement"],
+    "cement":     ["cement", "concrete"],
+    # Legno / naturali
+    "legno":      ["wood", "timber", "plywood", "mdf", "board"],
+    "wood":       ["wood", "timber", "plywood", "mdf", "board"],
+    # Fibre
+    "fibra di carbonio": ["carbon fiber", "carbon fibre", "cfrp"],
+    "carbon fiber":      ["carbon fiber", "carbon fibre"],
+    "fibra di vetro":    ["glass fiber", "glass fibre", "gfrp", "fiberglass"],
+    "glass fiber":       ["glass fiber", "glass fibre", "fiberglass"],
+    # Gomma / elastomeri
+    "gomma":      ["rubber", "elastomer", "natural rubber"],
+    "rubber":     ["rubber", "elastomer", "natural rubber"],
+    # Tessili
+    "cotone":     ["cotton"],
+    "cotton":     ["cotton"],
+    "lana":       ["wool"],
+    "wool":       ["wool"],
+    # Trasporti (per Task 3)
+    "traghetto":  ["ferry", "ship", "vessel"],
+    "nave":       ["ship", "vessel", "ferry"],
+    "ferry":      ["ferry", "ship", "vessel"],
+    "aereo":      ["aircraft", "airplane", "air freight"],
+    "aircraft":   ["aircraft", "airplane", "air freight"],
+    "camion":     ["lorry", "truck", "freight"],
+    "lorry":      ["lorry", "truck", "freight"],
 }
 
 def _expand_semantic_terms(label: str) -> List[str]:
@@ -168,6 +204,40 @@ def _get_geometry(name: str) -> Optional[str]:
     if any(k in name for k in ["brick", "mattone"]): return "brick"
     return None
 
+
+def _parse_ecoinvent_name(raw: str) -> tuple[str, str, str]:
+    """
+    Parsa un nome ecoinvent nel formato:
+      "activity name, attribute | product name | location"
+
+    Restituisce (activity_core, product_name, location).
+
+    Esempi:
+      "market for steel, unalloyed | steel, unalloyed | Italy"
+        → ("market for steel", "steel, unalloyed", "Italy")
+      "steel production, electric, low-alloyed | steel, low-alloyed | Europe without Switzerland"
+        → ("steel production", "steel, low-alloyed", "Europe without Switzerland")
+      "polypropylene, granulate"  (formato senza pipe)
+        → ("polypropylene", "polypropylene, granulate", "")
+    """
+    parts = [p.strip() for p in raw.split("|")]
+    if len(parts) >= 3:
+        # Formato completo: activity | product | location
+        activity_full = parts[0]
+        product = parts[1]
+        location = parts[2]
+        # Estrai il nome core dell'attività (prima della virgola)
+        activity_core = activity_full.split(",")[0].strip()
+    elif len(parts) == 2:
+        activity_core = parts[0].split(",")[0].strip()
+        product = parts[1]
+        location = ""
+    else:
+        # Formato semplice (no pipe)
+        activity_core = raw.split(",")[0].strip()
+        product = raw
+        location = ""
+    return activity_core, product, location
 
 
 class CSVLcaClient(LCADataProvider):
@@ -302,7 +372,7 @@ class CSVLcaClient(LCADataProvider):
             is_fallback = (geo != canonical_loc) if canonical_loc else False
             row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.85, self._df, require_virgin=True)
             if row is not None:
-                result = self._build_result(row, location_fallback_used=is_fallback)
+                result = self._build_result(row, location_fallback_used=is_fallback, requested_location=exact_loc, pass_number=1)
                 self._match_cache[cache_key] = result
                 return result
 
@@ -311,7 +381,7 @@ class CSVLcaClient(LCADataProvider):
             is_fallback = (geo != canonical_loc) if canonical_loc else False
             row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.70, self._df, require_virgin=False)
             if row is not None:
-                result = self._build_result(row, location_fallback_used=is_fallback)
+                result = self._build_result(row, location_fallback_used=is_fallback, requested_location=exact_loc, pass_number=2)
                 self._match_cache[cache_key] = result
                 return result
 
@@ -371,15 +441,27 @@ class CSVLcaClient(LCADataProvider):
             name_combined = f"{out_name} {proc_name}"
             
             import re
-            if require_virgin and re.search(r"waste|scrap|scarto", name_combined):
-                print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Virgin-First Enforced)")
-                continue
-                
+            
+            # task_type="optimization" + richiesta esplicita riciclato → permetti waste/recycled
+            user_wants_recycled = any(
+                term in original_label for term in
+                ["recycled", "riciclato", "recycling", "riciclo", "secondary", "secondario"]
+            )
+            
+            if require_virgin and not user_wants_recycled:
+                if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b", name_combined):
+                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Virgin-First Enforced)")
+                    continue
+            elif not user_wants_recycled and task_type == "optimization":
+                # In optimization mode senza richiesta riciclato: filtra waste nei metalli
+                if is_metal and re.search(r"\bwaste\b|\bscrap\b|\bscarto\b", name_combined):
+                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Metallo: waste in optimization)")
+                    continue
+                    
             if is_metal:
-                # Scarta waste/scrap/scarto OPPURE impatto < 1.0
-                import re
-                if re.search(r"waste|scrap|scarto", name_combined) or impact < 1.0:
-                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Metallo: waste o <1.0)")
+                # Scarta se impatto < 1.0
+                if impact < 1.0:
+                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Metallo: impatto <1.0)")
                     continue
             elif is_plastic:
                 # Permetti recycled ma solo se impatto > 0.8
@@ -415,21 +497,38 @@ class CSVLcaClient(LCADataProvider):
                 continue
                 
             # Calcola lo score migliore tra tutti i termini di ricerca su entrambe le colonne
-            def get_base_score(term, text):
-                if term == text:
-                    score_base = 1.0
-                else:
-                    words = text.split()
-                    if term in words:
-                        score_base = 0.85
+            def get_base_score(term: str, raw_text: str) -> float:
+                """
+                Calcola lo score di similarità tra 'term' (query) e 'raw_text' (nome CSV).
+                
+                Distingue tra:
+                - flowName: usa il product name estratto (dopo il primo pipe, prima della virgola)
+                - processName: usa l'activity core (prima della prima virgola o del primo pipe)
+                
+                La Length Penalty viene applicata solo sulle parole del nome core,
+                NON sull'intera stringa (evita penalità per attributi tecnici dopo la virgola).
+                """
+                activity_core, product_name, _ = _parse_ecoinvent_name(raw_text)
+                
+                # Confronta term contro sia il product_name sia l'activity_core
+                # (prendi il migliore dei due)
+                best = 0.0
+                for candidate in [activity_core.lower(), product_name.lower()]:
+                    if term == candidate:
+                        s = 1.0
+                    elif term in candidate.split():
+                        s = 0.85
                     else:
-                        score_base = difflib.SequenceMatcher(None, term, text).ratio()
+                        s = difflib.SequenceMatcher(None, term, candidate).ratio()
+                    
+                    # Length penalty: solo sulle parole del candidate (non della stringa intera)
+                    word_diff = len(candidate.split()) - len(term.split())
+                    if word_diff > 0:
+                        s -= (0.15 * word_diff)
+                    
+                    best = max(best, s)
                 
-                word_diff = len(text.split()) - len(term.split())
-                if word_diff > 0:
-                    score_base -= (0.15 * word_diff)
-                
-                return score_base
+                return best
 
             score_out = max((get_base_score(term, out_name) for term in search_terms), default=0.0)
             score_proc = max((get_base_score(term, proc_name) for term in search_terms), default=0.0)
@@ -447,11 +546,24 @@ class CSVLcaClient(LCADataProvider):
                     score -= 0.5
                     
             # 2. Industrial Quality Scoring (Stop "Pipe" Hallucinations)
-            bonus_terms = ["market for", "production", "primary", "unalloyed", "low-alloyed"]
+            # Bonus Industrial Quality — DISCRIMINANTE per "market for [material]"
+            # Il bonus si applica SOLO a record ecoinvent "market for X" dove X è
+            # il materiale cercato, NON a qualsiasi record con "market for".
+            is_market_for_material = (
+                proc_name.startswith("market for")
+                and any(term in proc_name for term in search_terms)
+                and "transport" not in proc_name
+                and "electricity" not in proc_name
+                and "heat" not in proc_name
+            )
+            
+            bonus_terms_non_market = ["production", "primary", "unalloyed", "low-alloyed"]
             penalty_terms = ["pipe", "tube", "welding", "extrusion", "drawing", "wire", "trawler", "seiner", "liner", "vessel", "ship", "vehicle", "machinery", "infrastructure", "forging", "processing"]
             
-            if any(term in name_combined for term in bonus_terms):
+            if is_market_for_material:
                 score += 0.3
+            elif any(term in name_combined for term in bonus_terms_non_market):
+                score += 0.2   # Bonus ridotto per altri indicatori di qualità
                 
             if any(term in name_combined for term in penalty_terms):
                 score -= 0.5
@@ -469,19 +581,39 @@ class CSVLcaClient(LCADataProvider):
             
         return None
 
-    def _build_result(self, row: pd.Series, location_fallback_used: bool) -> dict:
+    def _build_result(
+        self,
+        row: pd.Series,
+        location_fallback_used: bool,
+        requested_location: str = "",
+        pass_number: int = 1,
+    ) -> dict:
         """Construct the result dict from a matched DataFrame row."""
+        matched_location = str(row.get("location", "")).strip()
+        exact_match_found = (
+            matched_location.lower() == requested_location.lower()
+            if requested_location else False
+        )
+        geo_level = "exact" if exact_match_found else (
+            "regional" if "europe" in matched_location.lower() or "rer" in matched_location.lower()
+            else "global" if matched_location.lower() in ("global", "glo")
+            else "row" if matched_location.lower() in ("rest-of-world", "row")
+            else "fallback"
+        )
         return {
-            "index":                 row.name + 2,  # 0-based index → Excel row
+            "index":                 row.name + 2,
             "id":                    row["id"],
             "providerName":          row["processname"],
             "flowName":              row["outputname"],
-            "location":              row["location"],
+            "location":              matched_location,
             "environmental_impact":  float(row["climatechangeimpact"]),
-            "is_market":             "market" in str(row["processname"]).lower(),
+            "is_market":             str(row["processname"]).lower().strip().startswith("market for"),
             "energy_mj":             self._estimate_energy_mj(row),
             "cost_per_kg":           self._estimate_cost_per_kg(row),
             "location_fallback_used": location_fallback_used,
+            "exact_match_found":     exact_match_found,      # ← FIX BUG
+            "geo_level_used":        geo_level,              # ← FIX BUG
+            "pass_number":           pass_number,            # 1=virgin-first, 2=standard fallback
         }
 
     # ------------------------------------------------------------------

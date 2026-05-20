@@ -49,10 +49,10 @@ async def workflow_bom_ideator(state: AgentState) -> dict:
     ita = is_italian(state.get("user_input", ""))
     thought_log = list(state.get("thought_log", []))
     assumptions = list(state.get("assumptions_list", []))
-    if ita:
-        thought_log.append("Esecuzione Workflow & Ideatore BOM (7 Passi)...")
-    else:
-        thought_log.append("Executing Workflow & BOM Ideator (7 Steps)...")
+    thought_log.append(
+        f"Ho ricevuto la descrizione: \"{state.get('user_input', '')[:60]}...\". "
+        f"Avvio l'analisi in 7 fasi per costruire il modello LCA."
+    )
 
     # T05: Step 2 — Lookup Aggregato
     llm = ModelFactory.get_model()
@@ -150,22 +150,46 @@ ALWAYS ensure:
                     thought_log.append("Found matches with >80% similarity. Overriding interview request.")
                 is_interview_complete = True
 
+        # Leggi il contatore dai tentativi precedenti
+        attempt_count = state.get("interview_attempt_count", 0)
+        
         if not is_interview_complete:
-            # T05: step rimane a 2 (non avanzare) durante l'intervista
-            if ita:
-                thought_log.append("Interruzione: dati mancanti. In attesa di risposta utente.")
+            attempt_count += 1
+            
+            if attempt_count >= 3:
+                # Terzo tentativo fallito: applica 500 km e procedi con avviso
+                dist_km = 500.0
+                mass = result.total_mass_kg or 1.0
+                thought_log.append(
+                    f"⚠ Intervista fallita dopo {attempt_count} tentativi. "
+                    f"Applicati valori di default: massa={mass}kg, distanza=500km."
+                )
+                assumptions.append(
+                    f"AVVISO: Dati logistici non forniti dopo {attempt_count} richieste. "
+                    f"Usati valori di default (massa={mass}kg, distanza=500km). "
+                    f"I risultati LCA potrebbero non essere accurati."
+                )
+                # NON fare return — procedi con i default
+                is_interview_complete = True
+                result.total_mass_kg = mass
+                result.distance_km = dist_km
             else:
-                thought_log.append("Interrupt: missing data. Waiting for user response.")
-            missing_text = "Mi mancano alcune informazioni per poter procedere con il modello:\n"
-            for q in result.interview_questions:
-                missing_text += f"- {q}\n"
-            return {
-                "pending_feedback": missing_text,
-                "thought_log": thought_log,
-                "assumptions_list": assumptions,
-                "current_lca_step": 2,          # T05: blocco alla fase 2
-                "current_phase": "interview",   # T07: routing esplicito
-            }
+                # Continua a chiedere
+                if ita:
+                    thought_log.append("Interruzione: dati mancanti. In attesa di risposta utente.")
+                else:
+                    thought_log.append("Interrupt: missing data. Waiting for user response.")
+                missing_text = "Mi mancano alcune informazioni per poter procedere:\n"
+                for q in result.interview_questions:
+                    missing_text += f"- {q}\n"
+                return {
+                    "pending_feedback": missing_text,
+                    "thought_log": thought_log,
+                    "assumptions_list": assumptions,
+                    "current_lca_step": 2,
+                    "current_phase": "interview",
+                    "interview_attempt_count": attempt_count,
+                }
 
         # T05: Step 3 — Selezione Materiale (inferenza LLM completata)
         if ita:
@@ -269,18 +293,17 @@ ALWAYS ensure:
             bom.append(comp)
 
         # T05: Step 5 — Scomposizione BOM completata
-        if ita:
-            thought_log.append(f"Passo 5: BOM generata con {len(bom)} componenti.")
-        else:
-            thought_log.append(f"Step 5: BOM generated with {len(bom)} components.")
+        _m = result.total_mass_kg or 0.0
+        comp_names = ", ".join(c.get("name", "?") for c in bom[:3])
+        thought_log.append(
+            f"La BOM è composta da {len(bom)} componente/i: {comp_names}"
+            + (" e altri..." if len(bom) > 3 else ".")
+            + f" Massa totale: {_m:.2f} kg."
+        )
 
         workflow = [w.model_dump() for w in (result.workflow_steps or [])]
 
         # T05: Step 6 — Calcolo Logistica
-        if ita:
-            thought_log.append("Passo 6: Calcolo logistica (tkm).")
-        else:
-            thought_log.append("Step 6: Logistics calculation (tkm).")
         # ── Massa ────────────────────────────────────────────────────────────────────
         # Il valore di massa viene dal LLM (result.total_mass_kg).
         # Se è None significa che il prompt Step 7 non ha ricevuto abbastanza info
@@ -326,6 +349,12 @@ ALWAYS ensure:
                 "current_phase": "interview",
             }
 
+        dist_km = dist_km or 0.0
+        thought_log.append(
+            f"Calcolo logistico: {mass:.2f} kg × {dist_km:.0f} km "
+            f"= {(mass/1000.0*dist_km):.4f} tkm "
+            f"({'stimati' if result.distance_km is None else 'dichiarati dall\\'utente'})."
+        )
         tkm = (mass / 1000.0) * dist_km
         logistics = {
             "geography": geography,                                      # Nazione di produzione
@@ -344,7 +373,8 @@ ALWAYS ensure:
         if result.assumptions_made:
             assumptions.extend(result.assumptions_made)
 
-        assumptions = [a.replace("Austria", "Switzerland") for a in assumptions]
+        # Nota: ecoinvent usa "Europe without Switzerland" come codice regionale europeo.
+        # Nessuna sostituzione automatica di nomi di paesi nelle assunzioni.
 
         return {
             "bom": bom,

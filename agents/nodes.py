@@ -260,6 +260,7 @@ async def lca_validator(state: AgentState) -> dict:
 
                 mat_impact = orig_match["environmental_impact"]
                 is_market = orig_match.get("is_market", False)  # T02: campo corretto
+                orig_comp["is_market"] = is_market
                 if is_market:
                     has_market_material = True
                 mat_energy = orig_match.get("energy_mj") or orig_comp.get("estimated_energy_mj", 50.0)
@@ -387,35 +388,104 @@ async def lca_validator(state: AgentState) -> dict:
                 })
 
         # Aggiunta del componente logistico finale (Passo 6)
-        total_tkm = 0.0
-        for orig_comp in (state.get("bom") or []):
-            total_tkm += (orig_comp.get("weight_kg", 1.0) / 1000.0) * dist_km
-            
-        if has_market_material:
+        # Conta componenti market vs non-market
+        market_components = [c for c in (state.get("bom") or []) if c.get("is_market", False)]
+        non_market_components = [c for c in (state.get("bom") or []) if not c.get("is_market", False)]
+        all_market = len(market_components) > 0 and len(non_market_components) == 0
+        
+        if all_market:
+            # TUTTI i materiali sono "market for" → il trasporto è già incluso
+            # Aggiungere solo il tratto "ultimo miglio" (stimato 50 km) se non specificato
+            if dist_km > 200:  # Se distanza > 200 km, probabilmente non è ultimo miglio
+                market_assumption = (
+                    f"ATTENZIONE: Tutti i materiali usano dataset 'market for' che includono "
+                    f"già il trasporto al mercato locale. I {dist_km:.0f} km aggiuntivi "
+                    f"rappresentano il tratto aggiuntivo fornitore→sito non incluso nel dataset. "
+                    f"Se questa è la distanza totale, c'è rischio di double-counting."
+                ) if not ita else (
+                    f"ATTENZIONE: Tutti i materiali usano dataset 'market for' che includono "
+                    f"già il trasporto. I {dist_km:.0f} km potrebbero causare double-counting."
+                )
+                assumptions.append(market_assumption)
+                thought_log.append(market_assumption)
+            total_tkm = sum(
+                (c.get("weight_kg", 1.0) / 1000.0) * dist_km
+                for c in non_market_components  # Solo componenti non-market (= 0 in questo caso)
+            )
+        elif len(market_components) > 0:
+            # Mix market + non-market: trasporto solo per i non-market
             market_assumption = (
-                f"Dichiaro l'assunzione: gli {dist_km} km rappresentano il tratto aggiuntivo "
-                f"dal fornitore al sito in {geography}, non incluso nel dataset di mercato"
-            ) if ita else (
-                f"Assumption: the {dist_km} km represent the additional transport "
-                f"from the supplier to the site in {geography}, not included in the market dataset"
+                f"Componenti con dataset 'market for' ({', '.join(c.get('name','?') for c in market_components)}): "
+                f"trasporto già incluso nel dataset. "
+                f"Trasporto aggiuntivo calcolato solo per: "
+                f"{', '.join(c.get('name','?') for c in non_market_components)}."
             )
             assumptions.append(market_assumption)
-            thought_log.append(market_assumption)
+            total_tkm = sum(
+                (c.get("weight_kg", 1.0) / 1000.0) * dist_km
+                for c in non_market_components
+            )
+        else:
+            # Nessun materiale market for → trasporto su tutti i componenti
+            total_tkm = sum(
+                (c.get("weight_kg", 1.0) / 1000.0) * dist_km
+                for c in (state.get("bom") or [])
+            )
 
-        # Ricerca del servizio di trasporto nel DB (no diesel fuel)
-        transport_query = "transport, freight, lorry, unspecified"
-        thought_log.append(f"Ricerca servizio di trasporto nel DB: '{transport_query}'")
-        transport_match = provider.find_closest_match(target_product=transport_query, target_geography="RER")
+        # ── Ricerca dataset di trasporto (dinamica per mezzo e geografia) ────────────
+        
+        # Determina il tipo di mezzo di trasporto dalle assunzioni o dall'input
+        user_input_lower = (state.get("user_input") or "").lower()
+        transport_mode = "lorry"  # default
+        if any(w in user_input_lower for w in ["nave", "ship", "container", "sea freight", "ferry", "traghetto"]):
+            transport_mode = "ship"
+        elif any(w in user_input_lower for w in ["aereo", "aircraft", "air freight", "flight"]):
+            transport_mode = "aircraft"
+        
+        # Mappa del tipo di mezzo → query ecoinvent
+        _TRANSPORT_QUERIES = {
+            "lorry":    "transport, freight, lorry, unspecified",
+            "ship":     "transport, freight, sea, container ship",
+            "aircraft": "transport, freight, aircraft, unspecified",
+        }
+        transport_query = _TRANSPORT_QUERIES.get(transport_mode, _TRANSPORT_QUERIES["lorry"])
+        
+        # La nazione di ricerca è quella del FORNITORE (origine trasporto), non la destinazione
+        transport_geography = logistics.get("supplier_country") or geography or "RER"
+        
+        thought_log.append(
+            f"Ricerca servizio di trasporto nel DB: '{transport_query}' @ '{transport_geography}'"
+        )
+        transport_match = provider.find_closest_match(
+            target_product=transport_query,
+            target_geography=transport_geography
+        )
         
         if transport_match and transport_match.get("environmental_impact") is not None:
             transport_impact_per_tkm = transport_match["environmental_impact"]
-            transport_name = transport_match.get("flowName", transport_query) + f" | {transport_match.get('location', 'RER')}"
-            thought_log.append(f"Servizio trasporto trovato nel DB: {transport_name} ({transport_impact_per_tkm} kgCO2/tkm)")
+            transport_name = (
+                transport_match.get("flowName", transport_query)
+                + f" | {transport_match.get('location', transport_geography)}"
+            )
+            thought_log.append(
+                f"Servizio trasporto trovato: {transport_name} "
+                f"({transport_impact_per_tkm:.4f} kgCO2/tkm)"
+            )
         else:
-            # Fallback (non interrompere il workflow)
-            transport_impact_per_tkm = TRANSPORT_IMPACT_PER_TKM
-            transport_name = "transport, freight, lorry | RER (Fallback)"
-            thought_log.append(f"Servizio trasporto non trovato > 0.85. Uso fallback: {transport_impact_per_tkm} kgCO2/tkm")
+            # Fallback per mezzo specifico (non solo per lorry)
+            _TRANSPORT_FALLBACKS = {
+                "lorry":    TRANSPORT_IMPACT_PER_TKM,   # 0.05
+                "ship":     0.012,                       # Container shipping medio
+                "aircraft": 0.800,                       # Air freight medio
+            }
+            transport_impact_per_tkm = _TRANSPORT_FALLBACKS.get(transport_mode, TRANSPORT_IMPACT_PER_TKM)
+            transport_name = f"{transport_query} | {transport_geography} (Fallback)"
+            transport_fallback_note = (
+                f"Dataset trasporto '{transport_query}' non trovato per '{transport_geography}'. "
+                f"Usato fallback: {transport_impact_per_tkm} kgCO2/tkm."
+            )
+            assumptions.append(transport_fallback_note)  # ← FIX: aggiunge a assumptions_list
+            thought_log.append(transport_fallback_note)
 
         transport_impact_total = total_tkm * transport_impact_per_tkm
         
@@ -437,8 +507,7 @@ async def lca_validator(state: AgentState) -> dict:
         task_type = (state.get("constraints") or {}).get("task_type", "optimization")
         current_phase = "complete" if task_type == "modeling" else "lca"
         
-        assumptions = [a.replace("Austria", "Switzerland") for a in assumptions]
-        
+
         return {
             "lca_results": lca_results,
             "thought_log": thought_log,
@@ -541,6 +610,12 @@ def mcda_scorer(state: AgentState) -> dict:
 # e aggiorna state['bom'] o state['constraints'].
 # ---------------------------------------------------------------------------
 
+import re
+
+def _clean_token(text: str) -> str:
+    """Rimuove punteggiatura finale e normalizza."""
+    return re.sub(r"[.,!?;:]+$", "", text.strip().lower())
+
 _APPROVE_TOKENS = frozenset({
     "ok", "okay", "approva", "approvato", "si", "sì", "yes", "y",
     "continua", "procedi", "bene", "vai", "conferma", "perfetto",
@@ -560,7 +635,7 @@ async def human_feedback_processor(state: AgentState) -> dict:
             thought_log.append("No pending feedback — continuation approved.")
             return {"pending_feedback": None, "thought_log": thought_log, "current_phase": current_phase}
 
-        lower = feedback.lower()
+        lower = _clean_token(feedback)
 
         # Fase di intervista: qualsiasi risposta è una risposta alle domande mancanti
         if current_phase == "interview":
@@ -583,24 +658,37 @@ async def human_feedback_processor(state: AgentState) -> dict:
         llm = ModelFactory.get_model()
 
         system_msg = (
-            "You are a product design assistant. The user provided natural language feedback "
-            "to modify the Bill of Materials or design constraints.\n\n"
-            "Return ONLY valid JSON — no markdown, no explanations — with this structure:\n"
+            "You are a product design assistant helping refine a Bill of Materials (BOM) "
+            "and design constraints.\n\n"
+            "The user has provided corrective feedback in natural language. "
+            "Your task is to generate MINIMAL, SURGICAL modifications — only change what the user explicitly mentioned.\n\n"
+            "RULES:\n"
+            "1. Do NOT modify fields the user did not mention.\n"
+            "2. Do NOT regenerate the entire BOM — only patch the specific components/fields mentioned.\n"
+            "3. If the user says 'it's a table not a chair', only update 'name' and related fields, "
+            "   keep all materials, weights, and constraints unchanged.\n"
+            "4. If the user mentions a specific material change (e.g. 'use steel instead of aluminum'), "
+            "   only change the 'material' field for the named component.\n"
+            "5. constraint_modifications must be EMPTY {} unless the user explicitly mentioned constraints.\n\n"
+            "Return ONLY valid JSON with this structure (no markdown, no explanation):\n"
             "{\n"
             "  \"bom_modifications\": [\n"
-            "    {\"component_name\": \"<name>\", "
-            "\"field\": \"material|weight_kg|functional_role\", \"new_value\": \"<value>\"}\n"
+            "    {\"component_name\": \"<exact component name>\", "
+            "\"field\": \"material|weight_kg|name|functional_role\", \"new_value\": \"<value>\"}\n"
             "  ],\n"
             "  \"constraint_modifications\": {\"<key>\": \"<value>\"},\n"
-            "  \"thought\": \"Brief explanation of what changed\"\n"
+            "  \"thought\": \"Brief explanation in the user's language of exactly what changed and why\"\n"
             "}\n"
-            "Use empty arrays/objects when there are no modifications for that category. RESPOND EXCLUSIVELY IN ENGLISH."
+            "Use empty arrays/objects when there are no modifications for that category. "
+            "RESPOND IN THE SAME LANGUAGE AS THE USER FEEDBACK."
         )
 
         user_msg = (
             f"Current BOM:\n{json.dumps(state.get('bom', []), indent=2)}\n\n"
             f"Current Constraints:\n{json.dumps(state.get('constraints', {}), indent=2)}\n\n"
-            f"User Feedback: \"{feedback}\""
+            f"User Feedback: \"{feedback}\"\n\n"
+            f"Remember: make ONLY the changes explicitly requested. "
+            f"Do NOT change anything the user did not mention."
         )
 
         try:
