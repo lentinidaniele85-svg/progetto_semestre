@@ -18,7 +18,7 @@ DEFAULT_DATA_PATH = Path(__file__).parent / "DataSet.xlsx"
 #   3. GLO  – Global
 #   4. RoW  – Rest of World (last resort)
 #
-GEOGRAPHIC_FALLBACK_CHAIN: List[str] = ["Europe without Switzerland", "Global", "Rest-of-World"]
+GEOGRAPHIC_FALLBACK_CHAIN: List[str] = ["Global", "Europe without Switzerland", "Rest-of-World"]
 
 # Normalisation map: user-facing strings → canonical dataset codes/names
 _LOCATION_NORMALISE: dict[str, str] = {

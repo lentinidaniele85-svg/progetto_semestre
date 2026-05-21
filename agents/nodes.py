@@ -79,7 +79,7 @@ def _invoke_structured(chain, llm, schema, messages, *, retries: int = 1):
 def is_italian(text: str) -> bool:
     if not text: return False
     words = set(text.lower().replace(".", " ").replace(",", " ").split())
-    ita_words = {"di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "una", "e", "o", "ma", "che", "non", "si", "mi", "ti", "ci", "vi", "kg", "cina", "propilene", "plastica", "acciaio", "legno"}
+    ita_words = {"di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "una", "e", "o", "ma", "che", "non", "si", "mi", "ti", "ci", "vi", "kg"}
     return len(words.intersection(ita_words)) > 0
 
 def constraint_extractor(state: AgentState) -> dict:
@@ -105,10 +105,10 @@ def constraint_extractor(state: AgentState) -> dict:
                 "- 'geography': the PRODUCTION/ASSEMBLY location (where the product is made).\n"
                 "- 'supplier_country': the ORIGIN of the main raw material (where it comes from).\n"
                 "- 'destination_country': the DELIVERY destination (if different from geography).\n"
-                "- If the user says 'acciaio dalla Cina, assemblato in Italia':\n"
-                "    geography='Italy', supplier_country='China'\n"
-                "- If the user says 'prodotto in Europa' with no material origin:\n"
-                "    geography='Europe', supplier_country=None (to be asked)\n\n"
+                "- If the user says 'materiale da Country_A, assemblato in Country_B':\n"
+                "    geography='Country_B', supplier_country='Country_A'\n"
+                "- If the user says 'prodotto in Region_X' with no material origin:\n"
+                "    geography='Region_X', supplier_country=None (to be asked)\n\n"
                 "MASS RULE: Extract 'mass' ONLY if explicitly stated (e.g., '1 kg', '5 tonnes').\n"
                 "Do NOT infer mass from product type.\n\n"
                 "TASK TYPE: 'modeling' if user wants to calculate/model impact. "

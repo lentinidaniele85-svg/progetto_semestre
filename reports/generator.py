@@ -18,7 +18,7 @@ def generate_html_report(state: dict) -> str:
     generated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     ita = False
-    ita_words = {"di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "una", "e", "o", "ma", "che", "non", "si", "mi", "ti", "ci", "vi", "kg", "cina", "propilene", "plastica"}
+    ita_words = {"di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "una", "e", "o", "ma", "che", "non", "si", "mi", "ti", "ci", "vi", "kg"}
     words = set(user_input.lower().replace(".", " ").replace(",", " ").split())
     if len(words.intersection(ita_words)) > 0:
         ita = True

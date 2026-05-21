@@ -8,7 +8,7 @@ class ConstraintsExtract(BaseModel):
     structural_requirements: Optional[str] = None
     weight_limit_kg: Optional[float] = Field(default=None, gt=0.0)
     mass: Optional[float] = Field(default=None, gt=0.0, description="Massa o peso esplicito in kg (es. '1 kg', '5kg'). Da usare assolutamente se l'input specifica una quantità.")
-    geography: Optional[str] = Field(default=None, description="Area geografica o nazione (es. 'Europa', 'Italia', 'Perù'). Da estrarre se esplicitata nell'input.")
+    geography: Optional[str] = Field(default=None, description="Area geografica o nazione (es. 'Region_X', 'Country_Y'). Da estrarre se esplicitata nell'input.")
     recyclability_required: Optional[bool] = None
     dimensions: Optional[str] = Field(default=None, description="Dimensioni del prodotto (es. 50x50x90cm). 1 dei 4 Pilastri.")
     mechanical_load: Optional[str] = Field(default=None, description="Carico meccanico o peso da sostenere. 1 dei 4 Pilastri.")
@@ -18,14 +18,14 @@ class ConstraintsExtract(BaseModel):
     supplier_country: Optional[str] = Field(
         default=None,
         description=(
-            "Nazione di origine del materiale/fornitore (es. 'China', 'Germany'). "
+            "Nazione di origine del materiale/fornitore (es. 'Country_A', 'Country_B'). "
             "Diverso da geography (nazione di produzione). Usato per il calcolo del trasporto."
         )
     )
     destination_country: Optional[str] = Field(
         default=None,
         description=(
-            "Nazione di destinazione/assemblaggio (es. 'Italy'). "
+            "Nazione di destinazione/assemblaggio (es. 'Country_C'). "
             "Usato per calcolare la distanza fornitore\u2192sito."
         )
     )
