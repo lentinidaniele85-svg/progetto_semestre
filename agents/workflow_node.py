@@ -148,7 +148,10 @@ ALWAYS ensure:
         # La distanza viene chiesta al primo tentativo di intervista.
         # Se l'utente non la fornisce, al secondo tentativo si usa has_transport=False
         # → il sistema sceglie automaticamente il dataset 'market for'.
-        if dist_km is None and not is_material_only and attempt_count == 0:
+        transport_mode = getattr(result, "transport_mode", None)
+        needs_distance = (not is_material_only) or bool(result.supplier_country) or (transport_mode is not None)
+        
+        if dist_km is None and needs_distance and attempt_count == 0:
             missing.append("distanza di trasporto (km)")
             
         needs_interview = len(missing) > 0 or not is_interview_complete
@@ -186,9 +189,9 @@ ALWAYS ensure:
                     result.total_mass_kg = 1.0
                     assumptions.append("Massa non fornita dall'utente, assunto default di 1.0 kg.")
                 if geography.lower() in ["not specified", "unknown geography", ""]:
-                    # Nessun luogo specificato: il DB cercherà RER poi GLO automaticamente
-                    geography = "RER"
-                    assumptions.append("Luogo non fornito dall'utente. Utilizzo RER (Europa) come proxy; se non trovato il DB usa GLO (Global).")
+                    # Nessun luogo specificato: il DB cercherà GLO automaticamente
+                    geography = "GLO"
+                    assumptions.append("Luogo non fornito dall'utente al secondo tentativo. Utilizzo GLO (Global) come proxy di default mondiale.")
                 # Distanza: se ancora mancante al 2° tentativo, NON viene assegnato un default.
                 # has_transport=False → il sistema usa i dataset 'market for',
                 # che includono già la logistica media al punto di consegna.
@@ -218,11 +221,15 @@ ALWAYS ensure:
         for comp_data in result.components or []:
             comp = comp_data.model_dump()
             mat = comp.get("material", "unknown")
+            import re
+            mat = re.sub(r'\s*\([^)]*\)', '', mat)
             mat = normalize_text(mat)
             comp["material"] = mat
 
             # 1. Fuzzy Match del materiale nel DataSet.xlsx
-            has_transport = dist_km is not None and dist_km > 0
+            comp_dist = comp.get("distance_km")
+            eff_dist = comp_dist if comp_dist is not None else (dist_km or 0.0)
+            has_transport = eff_dist > 0
             best_match = provider.find_closest_match(
                 mat, 
                 location=geography, 
@@ -328,16 +335,20 @@ ALWAYS ensure:
             f"({log_type})."
         )
         tkm = (mass / 1000.0) * dist_km
+        transport_mode_val = getattr(result, "transport_mode", "lorry") or "lorry"
         logistics = {
             "geography": geography,                                      # Nazione di produzione
             "supplier_country": supplier_country or geography,           # Fallback: usa geography
             "destination_country": destination_country or geography,
             "distance_km": dist_km,
             "tkm": tkm,
+            "transport_mode": transport_mode_val
         }
 
+        process_name = f"{transport_mode_val.capitalize()} transport"
+
         workflow.append({
-            "process_name": "Lorry transport",
+            "process_name": process_name,
             "process_output": f"{tkm:.1f} tkm"
         })
 
@@ -348,15 +359,18 @@ ALWAYS ensure:
         # Nota: ecoinvent usa "Europe without Switzerland" come codice regionale europeo.
         # Nessuna sostituzione automatica di nomi di paesi nelle assunzioni.
 
+        unique_thoughts = list(dict.fromkeys(thought_log))
+        unique_assumptions = list(dict.fromkeys(assumptions))
+
         return {
             "bom": bom,
             "workflow_steps": workflow,
-            "thought_log": thought_log,
+            "thought_log": unique_thoughts,
             "current_lca_step": 4,          # Step 4 (Workflow completed, ready for Material Ideation)
             "current_phase": "workflow",    # T07: routing esplicito
             "detected_geometry": result.components[0].geometry if result.components else "Unknown",
             "logistics_data": logistics,
-            "assumptions_list": assumptions,
+            "assumptions_list": unique_assumptions,
         }
 
     except Exception as exc:

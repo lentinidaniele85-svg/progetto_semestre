@@ -101,7 +101,8 @@ def generate_html_report(state: dict) -> str:
         if task_type == "modeling":
             transport_comp = next((c for c in lca_results if c.get("component_name") == "Transport"), None)
             if transport_comp:
-                mat_name = transport_comp.get("original_material", "Lorry transport")
+                t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
+                mat_name = transport_comp.get("original_material", f"{t_mode.capitalize()} transport")
                 amount = transport_comp.get("original_scores", {}).get("amount", "-")
                 if amount != "-":
                     mat_name += f" (Amount: {amount:.1f})"
@@ -113,9 +114,10 @@ def generate_html_report(state: dict) -> str:
             else:
                 dist = state.get("logistics_data", {}).get("distance_km", 0.0)
                 if dist:
+                    t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
                     rows += (
                         f"<tr><td>Transport</td>"
-                        f"<td>Lorry transport ({dist} km)</td>"
+                        f"<td>{t_mode.capitalize()} transport ({dist} km)</td>"
                         f"<td>-</td></tr>"
                     )
                 

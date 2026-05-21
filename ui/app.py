@@ -441,7 +441,7 @@ with left_col:
     else:
         placeholder = "Describe a product to optimise (e.g. 'An office chair')…"
 
-    user_input = st.chat_input(placeholder)
+    user_input = st.chat_input(placeholder, max_chars=3000)
     if user_input:
         if st.session_state.awaiting_approval:
             handle_feedback(user_input)
@@ -632,7 +632,8 @@ with right_col:
                 if task_type == "modeling":
                     transport_comp = next((c for c in state.get("lca_results", []) if c.get("component_name") == "Transport"), None)
                     if transport_comp:
-                        mat_name = transport_comp.get("original_material", "Lorry transport")
+                        t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
+                        mat_name = transport_comp.get("original_material", f"{t_mode.capitalize()} transport")
                         amount = transport_comp.get("original_scores", {}).get("amount", "-")
                         if amount != "-":
                             mat_name += f" (Amount: {amount:.1f})"
@@ -650,10 +651,11 @@ with right_col:
                     else:
                         dist = state.get("logistics_data", {}).get("distance_km", 0.0)
                         if dist:
+                            t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
                             from core.config import TRANSPORT_IMPACT_PER_TKM
                             display_bom.append({
                                 "name": "Transport",
-                                "material": f"Lorry transport ({dist} km)",
+                                "material": f"{t_mode.capitalize()} transport ({dist} km)",
                                 "weight_kg": "-",
                                 "functional_role": "Logistics",
                                 "baseline_environmental_impact": TRANSPORT_IMPACT_PER_TKM,

@@ -26,6 +26,13 @@ class Settings(BaseSettings):
                 raise ValueError("ERRORE: OPENROUTER_API_KEY non è configurata correttamente. Impostala nel file .env o come variabile di ambiente.")
         return self
 
+    @model_validator(mode="after")
+    def validate_mcda_weights(self) -> "Settings":
+        total = self.weight_co2 + self.weight_cost + self.weight_energy + self.weight_water
+        if abs(total - 1.0) > 1e-5:
+            raise ValueError(f"ERRORE LCA: La somma dei pesi MCDA deve essere esattamente 1.0. Somma attuale: {total}")
+        return self
+
     lca_data_source: Literal["csv", "ecoinvent_api"] = Field(
         default="csv", alias="LCA_DATA_SOURCE"
     )
@@ -67,6 +74,8 @@ PROCESS_IMPACTS: dict[str, float] = {
 
 # Impatto trasporto [kg CO₂ eq / (tonnellata · km)]
 TRANSPORT_IMPACT_PER_TKM: float = 0.05
+SHIP_IMPACT_PER_TKM: float = 0.012
+AIRCRAFT_IMPACT_PER_TKM: float = 0.800
 
 # Valore di fallback cautelativo per materiali non trovati nel database [kg CO₂ eq / kg]
 CO2_FALLBACK_VALUE: float = 3.5

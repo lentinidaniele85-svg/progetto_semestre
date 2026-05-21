@@ -6,8 +6,8 @@ class ConstraintsExtract(BaseModel):
     budget: Optional[str] = None
     aesthetics: Optional[str] = None
     structural_requirements: Optional[str] = None
-    weight_limit_kg: Optional[float] = None
-    mass: Optional[float] = Field(default=None, description="Massa o peso esplicito in kg (es. '1 kg', '5kg'). Da usare assolutamente se l'input specifica una quantità.")
+    weight_limit_kg: Optional[float] = Field(default=None, gt=0.0)
+    mass: Optional[float] = Field(default=None, gt=0.0, description="Massa o peso esplicito in kg (es. '1 kg', '5kg'). Da usare assolutamente se l'input specifica una quantità.")
     geography: Optional[str] = Field(default=None, description="Area geografica o nazione (es. 'Europa', 'Italia', 'Perù'). Da estrarre se esplicitata nell'input.")
     recyclability_required: Optional[bool] = None
     dimensions: Optional[str] = Field(default=None, description="Dimensioni del prodotto (es. 50x50x90cm). 1 dei 4 Pilastri.")
@@ -29,12 +29,16 @@ class ConstraintsExtract(BaseModel):
             "Usato per calcolare la distanza fornitore\u2192sito."
         )
     )
+    transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(
+        default=None,
+        description="Modalità di trasporto. Inferire solo se esplicitato dall'utente (es. nave, aereo, camion)."
+    )
 
 
 class BOMComponent(BaseModel):
     name: str
     material: str = Field(description="Strictly the English name of the raw material (e.g. 'polypropylene', 'steel'). Do NOT include geography, weight, or context.")
-    weight_kg: float = Field(default=0.0)
+    weight_kg: float = Field(default=1.0, gt=0.0)
     functional_role: Optional[str] = Field(
         default=None,
         description="The structural or functional purpose of this component (e.g. 'load-bearing frame', 'aesthetic casing', 'cushioning layer').",
@@ -49,6 +53,7 @@ class BOMComponent(BaseModel):
     )
     lifespan_years: Optional[float] = Field(
         default=None,
+        gt=0.0,
         description="Expected useful lifespan of this component in years.",
     )
     material_source: str = Field(description="Il nome esatto del materiale derivato dal dataset.")
@@ -57,6 +62,9 @@ class BOMComponent(BaseModel):
     unit_impact_value: float = Field(default=0.0, description="Il valore di impatto unitario (es: kg CO2/kg).")
     estimated_cost_per_kg: Optional[float] = Field(default=None, description="The estimated market price per kg found online.")
     estimated_energy_mj: Optional[float] = Field(default=None, description="The estimated energy in MJ required found online.")
+    supplier_country: Optional[str] = Field(default=None, description="Origine specifica di questo materiale (se diversa dal prodotto).")
+    distance_km: Optional[float] = Field(default=None, ge=0.0, description="Distanza specifica di trasporto per questo componente.")
+    transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(default=None)
 
 
 class BOMExtract(BaseModel):
@@ -96,11 +104,15 @@ class WorkflowAndBOMResponse(BaseModel):
     is_interview_complete: bool = Field(description="True se l'utente ha fornito Massa, Materiale, Geografia e i 4 Pilastri.")
     interview_questions: List[str] = Field(default_factory=list, description="Domande se i dati obbligatori mancano.")
     geography: Optional[str] = Field(default=None, description="Luogo o distanza per la logistica.")
-    distance_km: Optional[float] = Field(default=None, description="Distanza stimata in km tra fornitore e sito, se esplicitata")
-    total_mass_kg: Optional[float] = Field(default=None, description="Massa totale in kg per la logistica.")
+    distance_km: Optional[float] = Field(default=None, ge=0.0, description="Distanza stimata in km tra fornitore e sito, se esplicitata")
+    total_mass_kg: Optional[float] = Field(default=None, gt=0.0, description="Massa totale in kg per la logistica.")
     assumptions_made: List[str] = Field(default_factory=list, description="Assunzioni fatte dall'IA (es. materiale inferito).")
     workflow_steps: List[WorkflowStep] = Field(default_factory=list, description="List of generic sequential manufacturing processes.")
     components: List[BOMComponent] = Field(default_factory=list, description="Componenti del prodotto con massa, geometria e materiale.")
+    transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(
+        default=None,
+        description="Modalità di trasporto. Inferire solo se esplicitato dall'utente (es. lorry, ship, aircraft)."
+    )
     supplier_country: Optional[str] = Field(
         default=None,
         description=(

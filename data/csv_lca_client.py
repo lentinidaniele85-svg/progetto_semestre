@@ -449,20 +449,13 @@ class CSVLcaClient(LCADataProvider):
                 ["recycled", "riciclato", "recycling", "riciclo", "secondary", "secondario"]
             )
             
-            if not user_wants_recycled:
+            if not user_wants_recycled and require_virgin:
+                if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b|\brecycled\b|\bsecondary\b", name_combined):
+                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Vergine Semantico)")
+                    continue
+            elif not user_wants_recycled:
                 if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b", name_combined):
                     print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Waste Assoluto)")
-                    continue
-                    
-            if is_metal:
-                # Scarta se impatto < 1.0
-                if impact < 1.0:
-                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Metallo: impatto <1.0)")
-                    continue
-            elif is_plastic:
-                # Permetti recycled ma solo se impatto > 0.8
-                if impact <= 0.8:
-                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Plastica: impatto <= 0.8)")
                     continue
             # Legno/Naturali non hanno limiti (nessun else break)
             

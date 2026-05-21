@@ -9,6 +9,8 @@ from core.config import (
     CO2_FALLBACK_VALUE,
     PROCESS_IMPACTS,
     TRANSPORT_IMPACT_PER_TKM,
+    SHIP_IMPACT_PER_TKM,
+    AIRCRAFT_IMPACT_PER_TKM,
     settings,
 )
 from core.llm_factory import ModelFactory
@@ -168,7 +170,7 @@ async def lca_validator(state: AgentState) -> dict:
         assumptions = list(state.get("assumptions_list", []))
 
         logistics = state.get("logistics_data", {})
-        dist_km = logistics.get("distance_km", 500.0)
+        dist_km = logistics.get("distance_km") or 0.0
         geography = logistics.get("geography", "GLO")
         
         has_market_material = False
@@ -387,114 +389,49 @@ async def lca_validator(state: AgentState) -> dict:
                     "alternatives": alt_results,
                 })
 
-        # Aggiunta del componente logistico finale (Passo 6)
-        # Conta componenti market vs non-market
-        market_components = [c for c in (state.get("bom") or []) if c.get("is_market", False)]
-        non_market_components = [c for c in (state.get("bom") or []) if not c.get("is_market", False)]
-        all_market = len(market_components) > 0 and len(non_market_components) == 0
+        # ── PATCH MIXED LOGISTICS ──
+        transport_impact_total = 0.0
+        total_tkm = 0.0
         
-        if all_market:
-            # TUTTI i materiali sono "market for" → il trasporto è già incluso
-            # Aggiungere solo il tratto "ultimo miglio" (stimato 50 km) se non specificato
-            if dist_km > 200:  # Se distanza > 200 km, probabilmente non è ultimo miglio
-                market_assumption = (
-                    f"ATTENZIONE: Tutti i materiali usano dataset 'market for' che includono "
-                    f"già il trasporto al mercato locale. I {dist_km:.0f} km aggiuntivi "
-                    f"rappresentano il tratto aggiuntivo fornitore→sito non incluso nel dataset. "
-                    f"Se questa è la distanza totale, c'è rischio di double-counting."
-                ) if not ita else (
-                    f"ATTENZIONE: Tutti i materiali usano dataset 'market for' che includono "
-                    f"già il trasporto. I {dist_km:.0f} km potrebbero causare double-counting."
-                )
-                assumptions.append(market_assumption)
-                thought_log.append(market_assumption)
-            total_tkm = sum(
-                (c.get("weight_kg", 1.0) / 1000.0) * dist_km
-                for c in non_market_components  # Solo componenti non-market (= 0 in questo caso)
-            )
-        elif len(market_components) > 0:
-            # Mix market + non-market: trasporto solo per i non-market
-            market_assumption = (
-                f"Componenti con dataset 'market for' ({', '.join(c.get('name','?') for c in market_components)}): "
-                f"trasporto già incluso nel dataset. "
-                f"Trasporto aggiuntivo calcolato solo per: "
-                f"{', '.join(c.get('name','?') for c in non_market_components)}."
-            )
-            assumptions.append(market_assumption)
-            total_tkm = sum(
-                (c.get("weight_kg", 1.0) / 1000.0) * dist_km
-                for c in non_market_components
-            )
-        else:
-            # Nessun materiale market for → trasporto su tutti i componenti
-            total_tkm = sum(
-                (c.get("weight_kg", 1.0) / 1000.0) * dist_km
-                for c in (state.get("bom") or [])
-            )
+        constraints = state.get("constraints") or {}
+        global_mode = constraints.get("transport_mode")
+        if not global_mode:
+            user_input_lower = (state.get("user_input") or "").lower()
+            if any(w in user_input_lower for w in ["nave", "ship", "container", "sea freight", "ferry", "traghetto"]):
+                global_mode = "ship"
+            elif any(w in user_input_lower for w in ["aereo", "aircraft", "air freight", "flight"]):
+                global_mode = "aircraft"
+            else:
+                global_mode = "lorry"
+        global_mode = global_mode.lower()
 
-        # ── Ricerca dataset di trasporto (dinamica per mezzo e geografia) ────────────
-        
-        # Determina il tipo di mezzo di trasporto dalle assunzioni o dall'input
-        user_input_lower = (state.get("user_input") or "").lower()
-        transport_mode = "lorry"  # default
-        if any(w in user_input_lower for w in ["nave", "ship", "container", "sea freight", "ferry", "traghetto"]):
-            transport_mode = "ship"
-        elif any(w in user_input_lower for w in ["aereo", "aircraft", "air freight", "flight"]):
-            transport_mode = "aircraft"
-        
-        # Mappa del tipo di mezzo → query ecoinvent
-        _TRANSPORT_QUERIES = {
-            "lorry":    "transport, freight, lorry, unspecified",
-            "ship":     "transport, freight, sea, container ship",
-            "aircraft": "transport, freight, aircraft, unspecified",
-        }
-        transport_query = _TRANSPORT_QUERIES.get(transport_mode, _TRANSPORT_QUERIES["lorry"])
-        
-        # La nazione di ricerca è quella del FORNITORE (origine trasporto), non la destinazione
-        transport_geography = logistics.get("supplier_country") or geography or "RER"
-        
-        thought_log.append(
-            f"Ricerca servizio di trasporto nel DB: '{transport_query}' @ '{transport_geography}'"
-        )
-        transport_match = provider.find_closest_match(
-            target_product=transport_query,
-            target_geography=transport_geography
-        )
-        
-        if transport_match and transport_match.get("environmental_impact") is not None:
-            transport_impact_per_tkm = transport_match["environmental_impact"]
-            transport_name = (
-                transport_match.get("flowName", transport_query)
-                + f" | {transport_match.get('location', transport_geography)}"
-            )
-            thought_log.append(
-                f"Servizio trasporto trovato: {transport_name} "
-                f"({transport_impact_per_tkm:.4f} kgCO2/tkm)"
-            )
-        else:
-            # Fallback per mezzo specifico (non solo per lorry)
-            _TRANSPORT_FALLBACKS = {
-                "lorry":    TRANSPORT_IMPACT_PER_TKM,   # 0.05
-                "ship":     0.012,                       # Container shipping medio
-                "aircraft": 0.800,                       # Air freight medio
-            }
-            transport_impact_per_tkm = _TRANSPORT_FALLBACKS.get(transport_mode, TRANSPORT_IMPACT_PER_TKM)
-            transport_name = f"{transport_query} | {transport_geography} (Fallback)"
-            transport_fallback_note = (
-                f"Dataset trasporto '{transport_query}' non trovato per '{transport_geography}'. "
-                f"Usato fallback: {transport_impact_per_tkm} kgCO2/tkm."
-            )
-            assumptions.append(transport_fallback_note)  # ← FIX: aggiunge a assumptions_list
-            thought_log.append(transport_fallback_note)
+        for orig_comp in (state.get("bom") or []):
+            mass_kg = orig_comp.get("weight_kg", 1.0)
+            comp_dist = orig_comp.get("distance_km")
+            eff_dist = comp_dist if comp_dist is not None else dist_km
+            comp_mode = (orig_comp.get("transport_mode") or global_mode).lower()
+            
+            if eff_dist > 0 and not orig_comp.get("is_market", False):
+                c_tkm = (mass_kg / 1000.0) * eff_dist
+                total_tkm += c_tkm
+                if comp_mode == "ship":
+                    c_factor = SHIP_IMPACT_PER_TKM
+                elif comp_mode == "aircraft":
+                    c_factor = AIRCRAFT_IMPACT_PER_TKM
+                else:
+                    c_factor = TRANSPORT_IMPACT_PER_TKM
+                transport_impact_total += c_tkm * c_factor
 
-        transport_impact_total = total_tkm * transport_impact_per_tkm
-        
+        transport_name = "Mixed Logistics (Dinamicamente Calcolata)"
+        if total_tkm == 0:
+             transport_name = "Trasporto integrato nei dataset 'market' (nessun addizionale)"
+             
         lca_results.append({
             "component_name": "Transport",
             "original_material": transport_name,
             "original_scores": {
                 "environmental_impact": transport_impact_total,
-                "unit_material_impact": transport_impact_per_tkm,
+                "unit_material_impact": 0.0, # Già aggregato
                 "energy_mj": 0.0,
                 "cost_tier": 1,
                 "cost_per_kg": 0.0,
@@ -508,10 +445,13 @@ async def lca_validator(state: AgentState) -> dict:
         current_phase = "complete" if task_type == "modeling" else "lca"
         
 
+        unique_thoughts = list(dict.fromkeys(thought_log))
+        unique_assumptions = list(dict.fromkeys(assumptions))
+
         return {
             "lca_results": lca_results,
-            "thought_log": thought_log,
-            "assumptions_list": assumptions,
+            "thought_log": unique_thoughts,
+            "assumptions_list": unique_assumptions,
             "current_lca_step": 7 if task_type == "modeling" else 6,
             "current_phase": current_phase,
         }
@@ -529,8 +469,8 @@ async def lca_validator(state: AgentState) -> dict:
 # ---------------------------------------------------------------------------
 
 def _safe_delta(orig: float, alt: float) -> float:
-    """(orig - alt) / orig, oppure 0.0 se orig è zero."""
-    return (orig - alt) / orig if orig != 0.0 else 0.0
+    """(orig - alt) / orig, oppure 0.0 se orig <= 0.0."""
+    return (orig - alt) / orig if orig > 0.0 else 0.0
 
 
 def mcda_scorer(state: AgentState) -> dict:
@@ -669,7 +609,7 @@ async def human_feedback_processor(state: AgentState) -> dict:
             "   keep all materials, weights, and constraints unchanged.\n"
             "4. If the user mentions a specific material change (e.g. 'use steel instead of aluminum'), "
             "   only change the 'material' field for the named component.\n"
-            "5. constraint_modifications must be EMPTY {} unless the user explicitly mentioned constraints.\n\n"
+            "5. constraint_modifications must be EMPTY {} unless the user explicitly mentioned constraints or logistics (e.g. set 'transport_mode': 'ship', 'lorry', or 'aircraft').\n\n"
             "Return ONLY valid JSON with this structure (no markdown, no explanation):\n"
             "{\n"
             "  \"bom_modifications\": [\n"
@@ -712,6 +652,14 @@ async def human_feedback_processor(state: AgentState) -> dict:
 
             constraints = dict(state.get("constraints", {}))
             constraints.update(patches.get("constraint_modifications", {}))
+            
+            # --- PATCH: Validazione dei vincoli uniti ---
+            try:
+                validated_constraints = ConstraintsExtract(**constraints)
+                constraints = validated_constraints.model_dump(exclude_none=True)
+            except Exception as e:
+                raise ValueError(f"Validazione Pydantic fallita sui nuovi vincoli: {e}")
+            # --------------------------------------------
 
             thought = patches.get("thought", "User modifications applied")
             thought_log.append(f"Feedback applied: {thought}")
@@ -725,8 +673,12 @@ async def human_feedback_processor(state: AgentState) -> dict:
             }
 
         except Exception as exc:
-            thought_log.append(f"Failed to parse feedback (proceeding unchanged): {exc}")
-            return {"pending_feedback": None, "thought_log": thought_log, "current_phase": current_phase}
+            thought_log.append(f"Errore di formattazione interno. Ripristino del checkpoint.")
+            return {
+                "pending_feedback": "Ho avuto difficoltà a comprendere la correzione tecnica. Puoi riformulare cosa devo modificare?",
+                "current_phase": "interview", # ← Riapre il loop senza far avanzare il grafo
+                "thought_log": thought_log
+            }
     except Exception as exc:
         logger.error(f"Human feedback processor failed: {exc}")
         return {
