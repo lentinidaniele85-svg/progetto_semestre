@@ -8,7 +8,7 @@ class ConstraintsExtract(BaseModel):
     structural_requirements: Optional[str] = None
     weight_limit_kg: Optional[float] = Field(default=None, gt=0.0)
     mass: Optional[float] = Field(default=None, gt=0.0, description="Massa o peso esplicito in kg (es. '1 kg', '5kg'). Da usare assolutamente se l'input specifica una quantità.")
-    geography: Optional[str] = Field(default=None, description="Area geografica o nazione (es. 'Region_X', 'Country_Y'). Da estrarre se esplicitata nell'input.")
+    geography: Optional[str] = Field(default=None, description="Area geografica o nazione (es. 'Italia', 'Francia', 'Europa'). Da estrarre se esplicitata nell'input. CRITICAL DIRECTIVE: DO NOT GUESS OR INFER THIS VALUE BASED ON LANGUAGE OR CONTEXT. IF THE USER DOES NOT EXPLICITLY WRITE A GEOGRAPHY OR COUNTRY, YOU ABSOLUTELY MUST RETURN NULL.")
     recyclability_required: Optional[bool] = None
     dimensions: Optional[str] = Field(default=None, description="Dimensioni del prodotto (es. 50x50x90cm). 1 dei 4 Pilastri.")
     mechanical_load: Optional[str] = Field(default=None, description="Carico meccanico o peso da sostenere. 1 dei 4 Pilastri.")
@@ -18,21 +18,20 @@ class ConstraintsExtract(BaseModel):
     supplier_country: Optional[str] = Field(
         default=None,
         description=(
-            "Nazione di origine del materiale/fornitore (es. 'Country_A', 'Country_B'). "
-            "Diverso da geography (nazione di produzione). Usato per il calcolo del trasporto."
+            "Nazione di origine del materiale/fornitore (es. 'Italia', 'Cina', 'Germania'). "
+            "Diverso da geography (nazione di produzione). Usato per il calcolo del trasporto. "
+            "CRITICAL DIRECTIVE: DO NOT GUESS OR INFER THIS VALUE BASED ON LANGUAGE OR CONTEXT. IF THE USER DOES NOT EXPLICITLY WRITE A GEOGRAPHY OR COUNTRY, YOU ABSOLUTELY MUST RETURN NULL."
         )
     )
     destination_country: Optional[str] = Field(
         default=None,
         description=(
-            "Nazione di destinazione/assemblaggio (es. 'Country_C'). "
+            "Nazione di destinazione/assemblaggio (es. 'Spagna', 'Stati Uniti'). "
             "Usato per calcolare la distanza fornitore\u2192sito."
         )
     )
-    transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(
-        default=None,
-        description="Modalità di trasporto. Inferire solo se esplicitato dall'utente (es. nave, aereo, camion)."
-    )
+    distance_km: Optional[float] = Field(default=None, description="Distanza di trasporto in km.")
+    transport_mode: Optional[str] = Field(default=None, description="Mezzo di trasporto (es. ship, lorry).")
 
 
 class BOMComponent(BaseModel):
@@ -103,7 +102,7 @@ class WorkflowAndBOMResponse(BaseModel):
     is_material_only: bool = Field(description="Vero se l'input è solo un materiale grezzo, Falso se è un prodotto.")
     is_interview_complete: bool = Field(description="True se l'utente ha fornito Massa, Materiale, Geografia e i 4 Pilastri.")
     interview_questions: List[str] = Field(default_factory=list, description="Domande se i dati obbligatori mancano.")
-    geography: Optional[str] = Field(default=None, description="Luogo o distanza per la logistica.")
+    geography: Optional[str] = Field(default=None, description="Luogo o distanza per la logistica. CRITICAL DIRECTIVE: DO NOT GUESS OR INFER THIS VALUE BASED ON LANGUAGE OR CONTEXT. IF THE USER DOES NOT EXPLICITLY WRITE A GEOGRAPHY OR COUNTRY, YOU ABSOLUTELY MUST RETURN NULL.")
     distance_km: Optional[float] = Field(default=None, ge=0.0, description="Distanza stimata in km tra fornitore e sito, se esplicitata")
     total_mass_kg: Optional[float] = Field(default=None, gt=0.0, description="Massa totale in kg per la logistica.")
     assumptions_made: List[str] = Field(default_factory=list, description="Assunzioni fatte dall'IA (es. materiale inferito).")
@@ -118,7 +117,8 @@ class WorkflowAndBOMResponse(BaseModel):
         description=(
             "Nazione di origine del fornitore del materiale principale. "
             "Se esplicitata dall'utente, usata per cercare il dataset di trasporto corretto. "
-            "NON inferire se non dichiarata."
+            "NON inferire se non dichiarata. "
+            "CRITICAL DIRECTIVE: DO NOT GUESS OR INFER THIS VALUE BASED ON LANGUAGE OR CONTEXT. IF THE USER DOES NOT EXPLICITLY WRITE A GEOGRAPHY OR COUNTRY, YOU ABSOLUTELY MUST RETURN NULL."
         )
     )
     destination_country: Optional[str] = Field(

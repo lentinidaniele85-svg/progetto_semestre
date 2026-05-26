@@ -411,7 +411,7 @@ async def lca_validator(state: AgentState) -> dict:
             eff_dist = comp_dist if comp_dist is not None else dist_km
             comp_mode = (orig_comp.get("transport_mode") or global_mode).lower()
             
-            if eff_dist > 0 and not orig_comp.get("is_market", False):
+            if eff_dist > 0:
                 c_tkm = (mass_kg / 1000.0) * eff_dist
                 total_tkm += c_tkm
                 if comp_mode == "ship":
@@ -573,7 +573,12 @@ async def human_feedback_processor(state: AgentState) -> dict:
 
         if not feedback:
             thought_log.append("No pending feedback — continuation approved.")
-            return {"pending_feedback": None, "thought_log": thought_log, "current_phase": current_phase}
+            return {
+                "pending_feedback": None,
+                "thought_log": thought_log,
+                "current_phase": current_phase,
+                "interview_attempt_count": state.get("interview_attempt_count", 0)
+            }
 
         lower = _clean_token(feedback)
 
@@ -585,13 +590,19 @@ async def human_feedback_processor(state: AgentState) -> dict:
                 "user_input": new_user_input,
                 "pending_feedback": None,
                 "thought_log": thought_log,
-                "current_phase": current_phase
+                "current_phase": "constraints",
+                "interview_attempt_count": state.get("interview_attempt_count", 0)
             }
 
         # Fase di revisione (constraints o workflow): controlla approvazione
         if lower in _APPROVE_TOKENS or any(lower.startswith(t + " ") for t in _APPROVE_TOKENS):
             thought_log.append("User approved — proceeding without modifications.")
-            return {"pending_feedback": None, "thought_log": thought_log, "current_phase": current_phase}
+            return {
+                "pending_feedback": None,
+                "thought_log": thought_log,
+                "current_phase": current_phase,
+                "interview_attempt_count": state.get("interview_attempt_count", 0)
+            }
 
         thought_log.append(f"Applying user feedback: \"{feedback}\"")
 
@@ -664,12 +675,16 @@ async def human_feedback_processor(state: AgentState) -> dict:
             thought = patches.get("thought", "User modifications applied")
             thought_log.append(f"Feedback applied: {thought}")
 
+            new_user_input = state.get("user_input", "") + f"\n\n[User Constraints Modification]: {feedback}"
+
             return {
+                "user_input": new_user_input,
                 "bom": bom,
                 "constraints": constraints,
                 "pending_feedback": None,
                 "thought_log": thought_log,
-                "current_phase": current_phase
+                "current_phase": current_phase,
+                "interview_attempt_count": state.get("interview_attempt_count", 0)
             }
 
         except Exception as exc:

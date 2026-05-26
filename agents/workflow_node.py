@@ -81,6 +81,8 @@ async def workflow_bom_ideator(state: AgentState) -> dict:
 Product Description: {state.get("user_input", "")}
 Constraints: {json.dumps(constraints)}
 
+CRITICAL: The Product Description may contain a "[User Interview Response]" section. You MUST extract any missing data (like mass, geography, or distance) from this response and incorporate it into your output!
+
 Execute the 7 Steps defined in your System Prompt and provide a COMPLETE BOM Generation output.
 
 ASSUMPTION-FIRST RULES (mandatory):

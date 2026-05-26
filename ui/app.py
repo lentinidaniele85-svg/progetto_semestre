@@ -192,6 +192,7 @@ def _process_agent_run(user_input: str, is_feedback: bool = False) -> None:
     mode = st.session_state.mode
 
     if is_feedback:
+        # Lasciamo che LangGraph gestisca il merging nativamente sul TypedDict
         graph.update_state(
             config,
             {
