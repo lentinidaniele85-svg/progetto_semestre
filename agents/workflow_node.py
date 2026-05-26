@@ -26,23 +26,368 @@ GEOMETRY_MAPPING = {
     "Profili/Tubi": "Extrusion",
 }
 
-def determine_manufacturing_process(material: str, geometry: str) -> str:
-    mat_lower = material.lower()
-    if any(m in mat_lower for m in ["steel", "aluminum", "aluminium", "iron", "copper", "brass", "metal", "titanium", "acciaio"]):
-        if geometry == "Profili/Tubi":
-            return "Section bar rolling"
-        elif geometry == "Film":
-            return "Metal sheet rolling"
-        else:
-            return "Metal working"
-    elif any(m in mat_lower for m in ["wood", "timber", "plywood", "mdf", "bamboo", "legno"]):
-        return "Woodworking"
-    elif any(m in mat_lower for m in ["cotton", "polyester", "fabric", "textile", "nylon", "hemp"]):
-        return "Textile weaving"
-    elif any(m in mat_lower for m in ["glass", "ceramic", "vetro", "ceramica"]):
-        return "Glass production" if "glass" in mat_lower or "vetro" in mat_lower else "Ceramic firing"
+# ---------------------------------------------------------------------------
+# DIRETTIVA 3: Component-Type → Process Mapper (DETERMINISTICO)
+#
+# Priorità ASSOLUTA su determine_manufacturing_process() basata su geometria.
+# L'LLM identifica solo il componente; il processo è hardcoded da questa lista.
+#
+# STRUTTURA: lista ordinata di (keywords_tuple, process_string).
+# MATCHING: any(kw in component_name_lower for kw in keywords).
+# ORDINE: le tuple più specifiche precedono quelle generiche.
+#   (es. 'bottle cap' deve matchare 'cap' → Injection PRIMA di 'bottle' → Blow)
+# ---------------------------------------------------------------------------
+COMPONENT_PROCESS_MAPPER: list[tuple[tuple, str]] = [
+    # ── Chiusure e tappi → Injection Moulding (geometria piana/solida, mai cava)
+    (
+        ("cap", "tappo", "lid", "closure", "stopper", "plug",
+         "coperchio", "chiusura", "bouchon"),
+        "Injection moulding",
+    ),
+    # ── Bottiglie, contenitori cavi → Blow Moulding
+    (
+        ("bottle", "bottiglia", "container", "flask", "jug",
+         "canister", "boccetta", "flacon", "recipient"),
+        "Blow moulding",
+    ),
+    # ── Tubi, pipe, profili → Extrusion
+    (
+        ("pipe", "tube", "tubo", "profile", "profilo",
+         "conduit", "duct", "condotto", "sezione"),
+        "Extrusion",
+    ),
+    # ── Film, fogli, membrane → Extrusion (film)
+    (
+        ("film", "sheet", "foglio", "membrane", "membrana",
+         "wrap", "pellicola", "packaging film"),
+        "Extrusion (film)",
+    ),
+    # ── Etichette → Printing
+    (
+        ("label", "etichetta", "sticker", "tag"),
+        "Printing",
+    ),
+    # ── Viti, bulloni, fastener → Metal working
+    (
+        ("screw", "vite", "bolt", "bullone", "nut", "dado",
+         "fastener", "rivet", "rivetto", "washer", "rondella"),
+        "Metal working",
+    ),
+    # ── Guarnizioni, O-ring → Injection Moulding
+    (
+        ("gasket", "guarnizione", "seal", "o-ring", "sealing"),
+        "Injection moulding",
+    ),
+    # ── Frame, telai strutturali → Metal working
+    (
+        ("frame", "telaio", "chassis", "bracket", "staffa",
+         "support", "supporto"),
+        "Metal working",
+    ),
+    # ── Cuscinetti → Metal working
+    (
+        ("bearing", "cuscinetto", "bushing"),
+        "Metal working",
+    ),
+]
+
+
+def get_process_by_component_name(component_name: str) -> Optional[str]:
+    """Lookup deterministico: dato il nome del componente, restituisce il processo.
+
+    Scorre COMPONENT_PROCESS_MAPPER in ordine e ritorna il primo match.
+    La complessità è O(k) dove k = numero totale di keyword — < 1ms.
+
+    Args:
+        component_name: il nome del componente dalla BOM (campo 'name').
+
+    Returns:
+        Stringa del processo manifatturiero, o None se non mappato.
+        None → il chiamante usa il fallback geometrico (+ logger.warning).
+    """
+    name_lower = component_name.lower().strip()
+    for keywords, process in COMPONENT_PROCESS_MAPPER:
+        if any(kw in name_lower for kw in keywords):
+            return process
+    return None
+
+
+# ---------------------------------------------------------------------------
+# AZIONE 2: Process Resolver — ragiona su classi, non su nomi
+# ---------------------------------------------------------------------------
+# Sostituisce determine_manufacturing_process() con una logica a due
+# dimensioni ortogonali:
+#   1. material_class: categoria chimica del materiale (thermoplastic, metal…)
+#   2. geometry_class:  forma fisica dell'oggetto (profile, hollow, flat…)
+#
+# Il processo viene risolto con un semplice lookup su _PROCESS_RESOLUTION_TABLE.
+# COMPONENT_PROCESS_MAPPER mantiene la PRIORITÀ ASSOLUTA: il Resolver viene
+# chiamato solo come fallback quando il mapper non trova un match.
+# ---------------------------------------------------------------------------
+
+# ── Classi di materiale ───────────────────────────────────────────────────
+_MATERIAL_CLASS_MAP: dict[str, list[str]] = {
+    "thermoplastic": [
+        "pvc", "polyvinyl chloride", "cloruro di polivinile",
+        "polypropylene", "polipropilene",
+        "polyethylene", "polietilene", "hdpe", "ldpe", "lldpe",
+        "polyethylene terephthalate", "polietilene tereftalato",
+        "acrylonitrile butadiene styrene", "acrylonitrile",
+        "polystyrene", "polistirene",
+        "polylactic", "acido polilattico",
+        "nylon", "polyamide", "poliammide",
+        "polycarbonate", "polycarbonato",
+        "polymethyl methacrylate", "acrylic",
+        "thermoplastic polyurethane",
+        "polyoxymethylene",
+        "plastic", "plastica", "polymer", "polimero",
+        # Short acronyms: prefix with WB: marker so _classify_material uses word-boundary match
+        "WB:pp", "WB:pe", "WB:pet", "WB:abs",
+        "WB:ps", "WB:pla", "WB:pa", "WB:pc",
+        "WB:pmma", "WB:tpu", "WB:pom",
+        "WB:eps", "WB:xps",
+    ],
+    "thermoset": [
+        "epoxy", "resina epossidica",
+        "resin", "resina",
+        "polyurethane", "poliuretano", "pu",
+        "phenolic", "fenoliche",
+        "unsaturated polyester", "poliestere insaturo",
+        "composite", "composito",
+    ],
+    "metal": [
+        "steel", "acciaio",
+        "stainless steel", "acciaio inox",
+        "aluminium", "aluminum", "alluminio",
+        "copper", "rame",
+        "brass", "ottone",
+        "iron", "ferro",
+        "cast iron", "ghisa",
+        "titanium", "titanio",
+        "zinc", "zinco",
+        "lead", "piombo",
+        "metal", "metallo", "alloy", "lega",
+    ],
+    "elastomer": [
+        "rubber", "gomma",
+        "natural rubber", "gomma naturale",
+        "silicone",
+        "elastomer", "elastomero",
+        "epdm", "nbr", "sbr",
+        "neoprene",
+    ],
+    "wood_based": [
+        "wood", "legno",
+        "timber",
+        "mdf", "plywood", "compensato",
+        "bamboo", "bambù",
+        "particle board", "chipboard",
+    ],
+    "glass_ceramic": [
+        "glass", "vetro",
+        "ceramic", "ceramica",
+        "porcelain", "porcellana",
+        "clay", "argilla",
+    ],
+    "textile": [
+        "cotton", "cotone",
+        "wool", "lana",
+        "polyester", "poliestere",
+        "hemp", "canapa",
+        "linen", "lino",
+        "silk", "seta",
+        "fabric", "tessuto",
+        "fiber", "fibre", "fibra",
+    ],
+}
+
+# ── Classi di geometria → parole chiave per rilevamento ──────────────────
+# (speculari a _GEOMETRY_SIGNALS in csv_lca_client.py, ma standalone)
+_GEOMETRY_CLASS_SIGNALS: dict[str, tuple[str, ...]] = {
+    "profile":  ("tubo", "pipe", "profilo", "profile", "barra", "rod",
+                 "condotto", "duct", "sezione", "section", "conduit",
+                 "tubing", "tubolaro", "profili/tubi"),
+    "hollow":   ("bottiglia", "bottle", "contenitore", "container",
+                 "flacone", "flask", "boccetta", "jug", "canister",
+                 "barattolo", "jar", "recipient", "corpi cavi"),
+    "flat":     ("foglio", "sheet", "film", "pellicola", "lastra",
+                 "slab", "board", "pannello", "panel", "membrane",
+                 "membrana", "wrap"),
+    "solid":    ("tappo", "cap", "blocco", "block", "pezzo", "part",
+                 "lid", "coperchio", "dado", "vite", "screw", "bolt",
+                 "pezzi pieni complessi"),
+    "fabric":   ("tessuto", "fabric", "fibra", "fiber", "fibre",
+                 "filato", "yarn", "tela"),
+}
+
+# Mapping dalle label geometriche LLM (Step 4) → geometry_class interna
+_LLM_GEOMETRY_LABEL_MAP: dict[str, str] = {
+    "corpi cavi":            "hollow",
+    "pezzi pieni complessi": "solid",
+    "film":                  "flat",
+    "profili/tubi":          "profile",
+    "fibra":                 "fabric",
+    "schiuma":               "solid",   # foam moulding → trattato come solid
+}
+
+# ── Tabella di risoluzione (material_class, geometry_class) → processo ───
+_PROCESS_RESOLUTION_TABLE: dict[tuple[str, str], str] = {
+    # Termoplastici
+    ("thermoplastic", "profile"):  "Extrusion",
+    ("thermoplastic", "hollow"):   "Blow moulding",
+    ("thermoplastic", "flat"):     "Extrusion (film)",
+    ("thermoplastic", "solid"):    "Injection moulding",
+    ("thermoplastic", "fabric"):   "Fibre extrusion",
+    # Termoindurenti
+    ("thermoset",     "solid"):    "Resin casting",
+    ("thermoset",     "flat"):     "Lamination",
+    ("thermoset",     "hollow"):   "Resin casting",
+    ("thermoset",     "profile"):  "Pultrusion",
+    # Metalli
+    ("metal",         "profile"):  "Section bar rolling",
+    ("metal",         "flat"):     "Metal sheet rolling",
+    ("metal",         "solid"):    "Metal working",
+    ("metal",         "hollow"):   "Metal working",
+    ("metal",         "fabric"):   "Metal working",
+    # Elastomeri
+    ("elastomer",     "solid"):    "Injection moulding",
+    ("elastomer",     "flat"):     "Compression moulding",
+    ("elastomer",     "profile"):  "Extrusion",
+    ("elastomer",     "hollow"):   "Compression moulding",
+    # Legno
+    ("wood_based",    "profile"):  "Woodworking",
+    ("wood_based",    "flat"):     "Woodworking",
+    ("wood_based",    "solid"):    "Woodworking",
+    ("wood_based",    "hollow"):   "Woodworking",
+    # Vetro / ceramica
+    ("glass_ceramic", "hollow"):   "Glass blowing",
+    ("glass_ceramic", "flat"):     "Float glass production",
+    ("glass_ceramic", "solid"):    "Ceramic firing",
+    # Tessili
+    ("textile",       "fabric"):   "Textile weaving",
+    ("textile",       "profile"):  "Fibre extrusion",
+    ("textile",       "flat"):     "Textile weaving",
+}
+
+
+def _classify_material(material: str) -> Optional[str]:
+    """Classifica il materiale nella sua classe chimica.
+
+    Scorre _MATERIAL_CLASS_MAP e restituisce la prima classe che matcha.
+    Matching:
+    - Keyword prefissate con 'WB:' → word-boundary regex (per acronimi corti come 'pp', 'pe')
+      evita che 'copper' matchi 'pp' come substring.
+    - Keyword normali → substring case-insensitive.
+
+    Returns:
+        Stringa della classe materiale (es. "thermoplastic"), o None se sconosciuto.
+    """
+    import re as _re
+    mat_lower = material.lower().strip()
+    for mat_class, keywords in _MATERIAL_CLASS_MAP.items():
+        for kw in keywords:
+            if kw.startswith("WB:"):
+                # Word-boundary match per acronimi corti
+                acronym = kw[3:]
+                if _re.search(r"\b" + _re.escape(acronym) + r"\b", mat_lower):
+                    return mat_class
+            else:
+                if kw in mat_lower:
+                    return mat_class
+    return None
+
+
+def _classify_geometry(
+    geometry_hint: Optional[str],
+    geometry_label: Optional[str],
+    component_name: Optional[str] = None,
+) -> str:
+    """Determina la classe geometrica con priorità decrescente.
+
+    Priorità:
+      1. geometry_hint dal SemanticNormalizer (già estratto dall'input utente)
+      2. geometry_label dal LLM (es. "Corpi Cavi", "Profili/Tubi")
+      3. Segnali nel nome del componente (fallback lessicale)
+      4. Default: "solid"
+
+    Returns:
+        Stringa della classe geometrica ("profile"|"hollow"|"flat"|"solid"|"fabric")
+    """
+    # 1. Hint dal normalizzatore semantico (già classificato)
+    if geometry_hint and geometry_hint in _GEOMETRY_CLASS_SIGNALS:
+        return geometry_hint
+
+    # 2. Label LLM → mappa alla classe interna
+    if geometry_label:
+        mapped = _LLM_GEOMETRY_LABEL_MAP.get(geometry_label.lower().strip())
+        if mapped:
+            return mapped
+
+    # 3. Segnali nel nome del componente
+    if component_name:
+        name_lower = component_name.lower()
+        for geom_class, keywords in _GEOMETRY_CLASS_SIGNALS.items():
+            if any(kw in name_lower for kw in keywords):
+                return geom_class
+
+    return "solid"  # Default sicuro
+
+
+def resolve_process(
+    material: str,
+    geometry_hint: Optional[str] = None,
+    geometry_label: Optional[str] = None,
+    component_name: Optional[str] = None,
+) -> str:
+    """Risolve il processo manifatturiero ragionando su classi, non su nomi.
+
+    Sostituisce determine_manufacturing_process().
+
+    Algoritmo:
+      1. Classifica il materiale → material_class (es. "thermoplastic")
+      2. Determina la geometria → geometry_class (es. "profile")
+      3. Lookup in _PROCESS_RESOLUTION_TABLE → processo (es. "Extrusion")
+      4. Fallback: "Injection moulding" (comportamento legacy invariato)
+
+    Args:
+        material:       Nome del materiale (es. "PVC", "polypropylene").
+        geometry_hint:  Classe geometrica dal SemanticNormalizer (es. "profile").
+        geometry_label: Label geometrica LLM (es. "Profili/Tubi").
+        component_name: Nome del componente per hinting lessicale.
+
+    Returns:
+        Stringa del processo manifatturiero.
+    """
+    mat_class = _classify_material(material)
+    geom_class = _classify_geometry(geometry_hint, geometry_label, component_name)
+
+    if mat_class:
+        process = _PROCESS_RESOLUTION_TABLE.get((mat_class, geom_class))
+        if process:
+            logger.debug(
+                "ProcessResolver: '%s' -> material_class='%s', geometry_class='%s' -> '%s'",
+                material, mat_class, geom_class, process,
+            )
+            return process
+        logger.warning(
+            "ProcessResolver: nessuna regola per ('%s', '%s'). Fallback -> 'Injection moulding'.",
+            mat_class, geom_class,
+        )
     else:
-        return GEOMETRY_MAPPING.get(geometry, "Injection moulding")
+        logger.warning(
+            "ProcessResolver: materiale '%s' non classificato. Fallback -> 'Injection moulding'.",
+            material,
+        )
+
+    return "Injection moulding"
+
+
+# Deprecato — mantenuto per compatibilità interna residua.
+# Il codice che usava determine_manufacturing_process() ora chiama resolve_process().
+def determine_manufacturing_process(material: str, geometry: str) -> str:
+    """DEPRECATED: usa resolve_process() al suo posto."""
+    return resolve_process(material=material, geometry_label=geometry)
+
 
 async def workflow_bom_ideator(state: AgentState) -> dict:
     from agents.nodes import is_italian
@@ -296,10 +641,42 @@ ALWAYS ensure:
                 comp["material_source"] = best_match["flowName"]
                 comp["unit_impact_value"] = best_match["environmental_impact"]
 
-            # 2. Mapping Geometria → Processo (solo per prodotti finiti)
+            # DIRETTIVA 3: Process Mapper — Name-First con Fallback Geometrico
+            # Priorità assoluta al nome del componente (deterministico);
+            # fallback alla geometria LLM solo se il componente non è in COMPONENT_PROCESS_MAPPER.
             if not is_material_only:
-                geom = comp.get("geometry") or "Pezzi Pieni Complessi"
-                comp["manufacturing_process"] = determine_manufacturing_process(mat, geom)
+                component_name_for_lookup = comp.get("name", "")
+                process_by_name = get_process_by_component_name(component_name_for_lookup)
+
+                if process_by_name:
+                    comp["manufacturing_process"] = process_by_name
+                    logger.debug(
+                        "ProcessMapper [NAME-FIRST]: '%s' → '%s' (deterministico per nome)",
+                        component_name_for_lookup, process_by_name,
+                    )
+                    thought_log.append(
+                        f"ProcessMapper: '{component_name_for_lookup}' → '{process_by_name}' "
+                        f"[deterministico per nome]"
+                    )
+                else:
+                    # PROCESS RESOLVER — attivo solo se il componente non è in COMPONENT_PROCESS_MAPPER.
+                    # Ragiona su (material_class, geometry_class) invece di keyword matching.
+                    geom_label = comp.get("geometry") or "Pezzi Pieni Complessi"
+                    resolved = resolve_process(
+                        material=mat,
+                        geometry_label=geom_label,
+                        component_name=component_name_for_lookup,
+                    )
+                    comp["manufacturing_process"] = resolved
+                    logger.warning(
+                        "ProcessResolver [FALLBACK]: '%s' non in COMPONENT_PROCESS_MAPPER. "
+                        "ProcessResolver: mat='%s', geom='%s' → process='%s'.",
+                        component_name_for_lookup, mat, geom_label, resolved,
+                    )
+                    thought_log.append(
+                        f"ProcessResolver: '{component_name_for_lookup}' (mat='{mat}', geom='{geom_label}') "
+                        f"→ '{resolved}' [resolver — aggiungere a COMPONENT_PROCESS_MAPPER se ricorrente]"
+                    )
             else:
                 comp["geometry"] = None
                 comp["manufacturing_process"] = None

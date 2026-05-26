@@ -94,6 +94,334 @@ _CATEGORY_COST: List[Tuple[Tuple[str, ...], float]] = [
 _DEFAULT_COST_PER_KG = 1.0  # fallback when no category matches
 
 
+# ---------------------------------------------------------------------------
+# AZIONE 1: Semantic Normalization Pipeline
+# ---------------------------------------------------------------------------
+# Questi blocchi sono processati PRIMA della ricerca fuzzy per estrarre
+# l'identità chimica del materiale separandola dal rumore (aggettivi, usi,
+# contenuti del contenitore).
+# ---------------------------------------------------------------------------
+
+# ── Aggettivi / modificatori "deboli" ────────────────────────────────────
+# Parole che NON cambiano la natura chimica del materiale → rimosse.
+# Multi-token prima, singoli dopo (greedy match dall'alto verso il basso).
+_WEAK_ADJECTIVE_PHRASES: tuple[str, ...] = (
+    # Usi finali / applicazioni
+    "per edilizia", "per costruzione", "per uso alimentare", "per imballaggio",
+    "per uso industriale", "per uso civile", "per uso domestico",
+    "for construction", "for packaging", "for food use", "for industrial use",
+    # Dimensioni / formati specifici (non classificanti)
+    "da 1 litro", "da 500 ml", "da 500ml", "da 1l", "da 2 litri",
+    "1 litre", "500 ml", "500ml",
+    # Preposizioni introduttive (italiano)
+    " per ", " in ", " di ", " da ",
+    "per ", "in ", "di ", "da ",
+)
+
+_WEAK_ADJECTIVE_TOKENS: frozenset[str] = frozenset({
+    # Aggettivi fisici non classificanti
+    "rigido", "rigid", "duro", "hard", "morbido", "soft",
+    "pesante", "heavy", "leggero", "light",
+    "opaco", "opaque", "lucido", "glossy", "satinato", "matte",
+    # Colori
+    "rosso", "red", "blu", "blue", "verde", "green",
+    "bianco", "white", "nero", "black", "trasparente", "transparent", "clear",
+    "grigio", "grey", "gray", "giallo", "yellow",
+    # Aggettivi di applicazione generici
+    "naturale", "natural",   # NON "riciclato": quello cambia l'LCA
+    "standard", "comune", "common", "generico", "generic",
+    "industriale", "industrial",   # descrittivo, non classificante
+    "speciale", "special",
+    "nuovo", "new", "usato", "used",
+    # Preposizioni standalone che sopravvivono al phrase-strip
+    "per", "in", "di", "da", "con", "senza", "for", "with", "without", "of",
+})
+
+# ── Aggettivi / modificatori "forti" ─────────────────────────────────────
+# Parole che CAMBIANO la natura chimica o il processo → mantenute e propagate
+# come `strong_modifiers` nel NormalizationResult.
+_STRONG_PROCESS_MODIFIERS: frozenset[str] = frozenset({
+    # Processo di produzione (specificano la tecnologia → rilevante LCA)
+    "estruso", "extruded", "extrusion",
+    "stampato", "moulded", "molded",
+    "soffiato", "blown",
+    "laminato", "laminated",
+    "sinterizzato", "sintered",
+    # Natura del materiale (cambiano l'impatto LCA)
+    "riciclato", "recycled", "riciclo",
+    "secondario", "secondary",
+    "vergine", "virgin",
+    # Modifiche strutturali (alterano le proprietà del materiale)
+    "rinforzato", "reinforced",
+    "espanso", "expanded", "espanso",  # es. EPS = polistirene espanso
+    "cellulare", "cellular",
+    "alveolare",
+    "reticolato", "cross-linked",
+    "caricato", "filled",              # es. PP caricato vetro
+})
+
+# ── Pattern di identità chimica ───────────────────────────────────────────
+# Lista ORDINATA: più specifico prima.
+# Ogni entry: (pattern_regex_or_substring, canonical_english_term)
+# Tipo "re" = regex con word boundary; tipo "sub" = substring case-insensitive
+_CHEMICAL_IDENTITY_PATTERNS: list[tuple[str, str, str]] = [
+    # ── Tier 1: Acronimi (word-boundary, case-insensitive) ────────────────
+    ("re", r"\bPVC\b",   "PVC"),
+    ("re", r"\bPET\b",   "PET"),
+    ("re", r"\bHDPE\b",  "HDPE"),
+    ("re", r"\bLDPE\b",  "LDPE"),
+    ("re", r"\bLLDPE\b", "LLDPE"),
+    ("re", r"\bPP\b",    "polypropylene"),
+    ("re", r"\bABS\b",   "ABS"),
+    ("re", r"\bPLA\b",   "PLA"),
+    ("re", r"\bEPS\b",   "EPS"),
+    ("re", r"\bXPS\b",   "XPS"),
+    ("re", r"\bPC\b",    "polycarbonate"),
+    ("re", r"\bPA\b",    "polyamide"),
+    ("re", r"\bPA6\b",   "polyamide"),
+    ("re", r"\bPA66\b",  "polyamide"),
+    ("re", r"\bTPU\b",   "thermoplastic polyurethane"),
+    ("re", r"\bPOM\b",   "polyoxymethylene"),
+    ("re", r"\bPMMA\b",  "polymethyl methacrylate"),
+    ("re", r"\bPE\b",    "polyethylene"),
+    # ── Tier 2: Nomi completi (normalizzati in inglese) ───────────────────
+    ("sub", "polyvinyl chloride",       "PVC"),
+    ("sub", "cloruro di polivinile",    "PVC"),
+    ("sub", "policloruro di vinile",    "PVC"),
+    ("sub", "polyethylene terephthalate", "PET"),
+    ("sub", "polietilene tereftalato",  "PET"),
+    ("sub", "polipropilene",            "polypropylene"),
+    ("sub", "polypropilene",            "polypropylene"),
+    ("sub", "polietilene",              "polyethylene"),
+    ("sub", "polietylene",              "polyethylene"),
+    ("sub", "polistirene",              "polystyrene"),
+    ("sub", "polystyrene",              "polystyrene"),
+    ("sub", "poliammide",               "polyamide"),
+    ("sub", "polycarbonato",            "polycarbonate"),
+    ("sub", "polimetilmetacrilato",     "polymethyl methacrylate"),
+    ("sub", "acido polilattico",        "PLA"),
+    ("sub", "polylactic acid",          "PLA"),
+    ("sub", "polyurethane",             "polyurethane"),
+    ("sub", "poliuretano",              "polyurethane"),
+    ("sub", "acrylonitrile butadiene",  "ABS"),
+    # ── Metalli ───────────────────────────────────────────────────────────
+    ("sub", "acciaio inox",             "stainless steel"),
+    ("sub", "stainless steel",          "stainless steel"),
+    ("sub", "acciaio",                  "steel"),
+    ("sub", "alluminio",                "aluminium"),
+    ("sub", "aluminum",                 "aluminium"),
+    ("sub", "rame",                     "copper"),
+    ("sub", "ottone",                   "brass"),
+    ("sub", "ferro",                    "iron"),
+    ("sub", "ghisa",                    "cast iron"),
+    ("sub", "titanio",                  "titanium"),
+    ("sub", "zinco",                    "zinc"),
+    ("sub", "piombo",                   "lead"),
+    # ── Naturali / altri ─────────────────────────────────────────────────
+    ("sub", "fibra di carbonio",        "carbon fiber"),
+    ("sub", "carbon fibre",             "carbon fiber"),
+    ("sub", "fibra di vetro",           "glass fiber"),
+    ("sub", "glass fibre",              "glass fiber"),
+    ("sub", "legno",                    "wood"),
+    ("sub", "calcestruzzo",             "concrete"),
+    ("sub", "cemento",                  "cement"),
+    ("sub", "vetro",                    "glass"),
+    ("sub", "gomma",                    "rubber"),
+    ("sub", "silicone",                 "silicone"),
+    ("sub", "nylon",                    "nylon"),
+    ("sub", "cotone",                   "cotton"),
+    ("sub", "lana",                     "wool"),
+]
+
+# ── Segnali di geometria / forma ─────────────────────────────────────────
+# Mappa classe-geometria → parole chiave (italiano + inglese).
+# La classe geometrica viene usata dal ProcessResolver.
+_GEOMETRY_SIGNALS: dict[str, tuple[str, ...]] = {
+    "profile":  ("tubo", "pipe", "profilo", "profile", "barra", "rod",
+                 "condotto", "duct", "sezione", "section", "conduit",
+                 "tubing", "tubolaro"),
+    "hollow":   ("bottiglia", "bottle", "contenitore", "container",
+                 "flacone", "flask", "boccetta", "jug", "brocca",
+                 "canister", "barattolo", "jar", "recipient", "flacone"),
+    "flat":     ("foglio", "sheet", "film", "pellicola", "lastra",
+                 "slab", "board", "pannello", "panel", "membrane",
+                 "membrana", "wrap", "packaging film"),
+    "solid":    ("tappo", "cap", "blocco", "block", "pezzo", "part",
+                 "componente", "component", "lid", "coperchio",
+                 "dado", "nut", "vite", "screw", "bolt", "bullone"),
+    "fabric":   ("tessuto", "fabric", "fibra", "fiber", "fibre",
+                 "filato", "yarn", "tela", "cloth"),
+}
+
+# ── Contenuti irrilevanti per LCA del contenitore ────────────────────────
+# Questi token sono il CONTENUTO del contenitore, non il materiale.
+# Es: "bottiglia d'acqua" → il materiale è il contenitore (PET), non l'acqua.
+_CONTAINER_CONTENTS: frozenset[str] = frozenset({
+    "acqua", "water", "vino", "wine", "birra", "beer", "succo", "juice",
+    "olio", "oil", "latte", "milk", "yogurt", "aceto", "vinegar",
+    "shampoo", "detersivo", "detergent", "sapone", "soap",
+    "bevanda", "beverage", "drink", "liquido", "liquid",
+    "gas", "aria", "air",
+})
+
+# ── Mapping contenitore → materiale default ───────────────────────────────
+# Quando l'input è un oggetto contenitore senza materiale esplicito,
+# il normalizzatore usa questo mapping per inferire il materiale base.
+_CONTAINER_DEFAULT_MATERIAL: dict[str, str] = {
+    "hollow":  "PET",         # bottiglia/contenitore → PET (più comune)
+    "profile": "PVC",         # tubo/profilo → PVC (più comune)
+    "flat":    "polyethylene", # foglio/film → PE
+    "solid":   "polypropylene", # pezzo solido → PP
+}
+
+
+# ---------------------------------------------------------------------------
+# NormalizationResult — output strutturato del SemanticNormalizer
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass, field as dc_field
+
+@dataclass
+class NormalizationResult:
+    """Output strutturato della Semantic Normalization Pipeline.
+
+    Attributes:
+        base_material:     Il termine chimico core da cercare nel DB.
+                           Es: "PVC rigido per edilizia" → "PVC"
+        geometry_hint:     Classe geometrica dedotta dall'input, se presente.
+                           Uno di: "profile", "hollow", "flat", "solid", "fabric", None.
+                           Es: "tubo in PVC" → "profile"
+        strong_modifiers:  Aggettivi forti mantenuti (cambiano natura LCA).
+                           Es: ["recycled"], ["extruded"]
+        stripped_tokens:   Token rimossi durante il processo (per audit/debug).
+        original_input:    Input originale immutato (per tracciabilità).
+        inferred_material: True se il materiale è stato dedotto dalla geometria
+                           (non trovato esplicitamente nell'input).
+    """
+    base_material:    str
+    geometry_hint:    "Optional[str]"
+    strong_modifiers: "list[str]"  = dc_field(default_factory=list)
+    stripped_tokens:  "list[str]"  = dc_field(default_factory=list)
+    original_input:   str          = ""
+    inferred_material: bool        = False
+
+
+# ---------------------------------------------------------------------------
+# SemanticNormalizer — la pipeline di normalizzazione
+# ---------------------------------------------------------------------------
+class SemanticNormalizer:
+    """Normalizza l'input utente prima della ricerca fuzzy nel DB LCA.
+
+    Pipeline (3 passi sequenziali):
+      1. Content Stripping: rimuove i contenuti del contenitore (acqua, vino…)
+      2. Chemical Identity Extraction: estrae il termine chimico core
+         usando _CHEMICAL_IDENTITY_PATTERNS (con priorità acronimi > nomi > categorie)
+      3. Geometry/Form Extraction: deduce la classe geometrica dall'input
+         (usata poi dal ProcessResolver)
+
+    Se nessun pattern chimico matcha, restituisce l'input ripulito dal rumore
+    come base_material (comportamento "safe" — non inventa nulla).
+    """
+
+    import re as _re_module
+
+    def normalize(self, raw_input: str) -> NormalizationResult:
+        """Esegue la pipeline completa su raw_input.
+
+        Args:
+            raw_input: stringa grezza dall'utente (qualsiasi lingua).
+
+        Returns:
+            NormalizationResult con base_material, geometry_hint, ecc.
+        """
+        import re
+
+        text = raw_input.strip()
+        stripped_tokens: list[str] = []
+        strong_modifiers: list[str] = []
+
+        # ── Passo 0: Rimuovi contenuti irrilevanti ────────────────────────
+        # Es: "bottiglia d'acqua" → rimuove "acqua" → "bottiglia"
+        tokens = text.lower().split()
+        content_free_tokens = []
+        for tok in tokens:
+            # Rimuovi apostrofi per matching (d'acqua → acqua)
+            clean_tok = tok.replace("'", "").replace("'", "")
+            if clean_tok in _CONTAINER_CONTENTS:
+                stripped_tokens.append(tok)
+            else:
+                content_free_tokens.append(tok)
+        text_clean = " ".join(content_free_tokens)
+
+        # ── Passo 0b: Rileva strong modifiers PRIMA dello stripping ──────
+        tokens_lower = text_clean.lower().split()
+        for tok in tokens_lower:
+            if tok in _STRONG_PROCESS_MODIFIERS:
+                if tok not in strong_modifiers:
+                    strong_modifiers.append(tok)
+
+        # ── Passo 1: Geometry/Form Extraction ────────────────────────────
+        geometry_hint: Optional[str] = None
+        text_lower = text_clean.lower()
+        for geom_class, keywords in _GEOMETRY_SIGNALS.items():
+            if any(kw in text_lower for kw in keywords):
+                geometry_hint = geom_class
+                break  # Prima classe trovata vince (ordine dict = priorità)
+
+        # ── Passo 2: Chemical Identity Extraction ─────────────────────────
+        base_material: Optional[str] = None
+        for pattern_type, pattern, canonical in _CHEMICAL_IDENTITY_PATTERNS:
+            if pattern_type == "re":
+                if re.search(pattern, text_clean, re.IGNORECASE):
+                    base_material = canonical
+                    break
+            else:  # "sub"
+                if pattern.lower() in text_clean.lower():
+                    base_material = canonical
+                    break
+
+        inferred = False
+        if base_material is None:
+            # Passo 2b: Nessun match chimico esplicito.
+            # Prova a dedurre dalla geometria (es. "bottiglia" → PET)
+            if geometry_hint and geometry_hint in _CONTAINER_DEFAULT_MATERIAL:
+                base_material = _CONTAINER_DEFAULT_MATERIAL[geometry_hint]
+                inferred = True
+            else:
+                # Safe fallback: restituisce l'input ripulito dai weak tokens
+                base_material = self._strip_weak_tokens(text_clean)
+
+        # ── Passo 3: Strip weak tokens dall'input per audit ───────────────
+        # (già eseguito internamente, tracciamo solo per debug)
+        for phrase in _WEAK_ADJECTIVE_PHRASES:
+            phrase_clean = phrase.strip()
+            if phrase_clean and phrase_clean in text_lower:
+                stripped_tokens.append(phrase_clean)
+        for tok in tokens_lower:
+            if tok in _WEAK_ADJECTIVE_TOKENS:
+                stripped_tokens.append(tok)
+
+        return NormalizationResult(
+            base_material=base_material,
+            geometry_hint=geometry_hint,
+            strong_modifiers=strong_modifiers,
+            stripped_tokens=list(dict.fromkeys(stripped_tokens)),  # dedup
+            original_input=raw_input,
+            inferred_material=inferred,
+        )
+
+    def _strip_weak_tokens(self, text: str) -> str:
+        """Rimuove phrase deboli e token deboli, restituisce il residuo pulito."""
+        result = text.lower()
+        for phrase in _WEAK_ADJECTIVE_PHRASES:
+            result = result.replace(phrase.lower(), " ")
+        tokens = [t for t in result.split() if t not in _WEAK_ADJECTIVE_TOKENS]
+        return " ".join(tokens).strip() or text.lower().strip()
+
+
+# Istanza singleton del normalizzatore (senza stato → sicuro)
+_semantic_normalizer = SemanticNormalizer()
+
+
 _SEMANTIC_SYNONYMS: dict[str, list[str]] = {
     # Metalli
     "acciaio":    ["steel", "cast iron", "ferro"],
@@ -111,6 +439,10 @@ _SEMANTIC_SYNONYMS: dict[str, list[str]] = {
     "titanium":   ["titanium"],
     # Polimeri generici
     "plastica":   ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe"],
+    # DIRETTIVA 1: entry dedicata PET polimero — usa nome IUPAC per massimizzare
+    # lo score contro "market for polyethylene terephthalate" e minimizzarlo
+    # contro "petroleum and gas production" (nomi completamente diversi).
+    "pet":        ["polyethylene terephthalate", "pet", "granulate"],
     "plastic":    ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe"],
     # Polimeri specifici
     "polipropilene": ["polypropylene", "pp"],
@@ -153,12 +485,26 @@ _SEMANTIC_SYNONYMS: dict[str, list[str]] = {
 }
 
 def _expand_semantic_terms(label: str) -> List[str]:
-    """Return a list of expanded industrial synonyms for a given label."""
+    """Return a list of expanded industrial synonyms for a given label.
+
+    MATCHING LOGIC:
+    - Chiavi corte (≤ 4 caratteri, es. 'pet', 'pp', 'abs'): word-boundary regex.
+      Previene falsi positivi come 'pet' in 'petroleum'.
+    - Chiavi lunghe (> 4 caratteri, es. 'acciaio', 'polipropilene'): substring.
+      Meno ambigue per definizione.
+    """
+    import re as _re
     base_term = label.strip().lower()
     expanded = [base_term]
     for key, synonyms in _SEMANTIC_SYNONYMS.items():
-        if key in base_term:
-            expanded.extend(synonyms)
+        if len(key) <= 4:
+            # Word-boundary match per acronimi corti: evita 'pet' in 'petroleum'
+            if _re.search(r"\b" + _re.escape(key) + r"\b", base_term):
+                expanded.extend(synonyms)
+        else:
+            # Substring match per termini lunghi (retrocompatibile)
+            if key in base_term:
+                expanded.extend(synonyms)
     # Remove duplicates but preserve order
     seen = set()
     result = []
@@ -167,6 +513,89 @@ def _expand_semantic_terms(label: str) -> List[str]:
             seen.add(term)
             result.append(term)
     return result
+
+
+# ---------------------------------------------------------------------------
+# DIRETTIVA 1: Contextual Intent Classifier
+#
+# Determina l'intenzione della query in modo DETERMINISTICO (zero LLM).
+# Output: "plastic_material" | "extraction_activity" | "generic"
+#
+# LOGICA:
+#   1. Se l'input contiene keyword di ESTRAZIONE → "extraction_activity" (priorità)
+#   2. Elif contiene keyword di PLASTICA/PRODOTTO → "plastic_material"
+#   3. Else → "generic" (nessun modificatore aggiunto)
+#
+# PRIORITÀ ESTRAZIONE: evita false-positive su query ibride tipo "petroleum PET".
+# In quel caso il filtro anti-petroleum NON viene applicato.
+# ---------------------------------------------------------------------------
+
+# Segnali che indicano "voglio modellare un materiale plastico / prodotto finito"
+_PLASTIC_MATERIAL_INTENT: frozenset = frozenset({
+    # Acronimi e nomi tecnici polimeri
+    "pet", "pete", "polyethylene terephthalate",
+    "hdpe", "ldpe", "lldpe",
+    "pvc", "polyvinyl chloride",
+    "pp", "polypropylene", "polipropilene",
+    "pe", "polyethylene", "polietilene",
+    "ps", "polystyrene",
+    "abs", "acrylonitrile butadiene styrene",
+    "pla", "polylactic acid",
+    "nylon", "polyamide",
+    "plastic", "plastica", "polymer", "polimero",
+    # Prodotti finiti in plastica
+    "bottle", "bottiglia", "container", "cap", "tappo",
+    "granulate", "granulato", "pellet",
+    "packaging", "imballaggio",
+    "film", "sheet", "foglio",
+})
+
+# Segnali che indicano "voglio modellare un'attività estrattiva / industria fossile"
+_EXTRACTION_ACTIVITY_INTENT: frozenset = frozenset({
+    "petroleum", "petrolio",
+    "crude oil", "greggio", "olio grezzo",
+    "natural gas", "gas naturale",
+    "offshore", "onshore",
+    "extraction", "estrazione",
+    "drilling", "perforazione",
+    "refinery", "raffineria", "refining",
+    "oil well", "pozzo petrolifero",
+    "fossil fuel", "combustibile fossile",
+    "liquefied natural gas", "lng",
+    "upstream", "downstream",
+})
+
+
+def classify_search_intent(label_lower: str) -> str:
+    """Classifica l'intenzione della query in modo deterministico (zero LLM).
+
+    Algoritmo:
+    - Tokenizza label_lower in parole e bigrammi (per catturare 'crude oil', 'natural gas').
+    - Controlla intersezione con _EXTRACTION_ACTIVITY_INTENT (priorità alta).
+    - Poi controlla intersezione con _PLASTIC_MATERIAL_INTENT.
+    - Default: "generic" (nessun modificatore applicato).
+
+    Args:
+        label_lower: la query normalizzata in lowercase.
+
+    Returns:
+        "extraction_activity" | "plastic_material" | "generic"
+    """
+    tokens = label_lower.split()
+    # Genera bigrammi per catturare frasi composte (es. "crude oil", "natural gas")
+    bigrams = [f"{tokens[i]} {tokens[i + 1]}" for i in range(len(tokens) - 1)]
+    all_tokens: set = set(tokens) | set(bigrams)
+
+    # PRIORITÀ ESTRAZIONE: se l'utente menziona termini fossili/estrattivi,
+    # non applicare filtri anti-petroleum (potrebbe essere un use-case legittimo)
+    if all_tokens & _EXTRACTION_ACTIVITY_INTENT:
+        return "extraction_activity"
+
+    # INTENT PLASTICA: termini di polimeri o prodotti finiti in plastica
+    if all_tokens & _PLASTIC_MATERIAL_INTENT:
+        return "plastic_material"
+
+    return "generic"
 
 
 def _normalise_location(raw: Optional[str]) -> str:
@@ -319,59 +748,88 @@ class CSVLcaClient(LCADataProvider):
         task_type: str = "optimization",
         has_transport: Optional[bool] = None
     ) -> Optional[dict]:
-        """Find the closest matching material using a 3-stage search logic.
-        
+        """Find the closest matching material using a 4-stage search logic.
+
+        STADIO 0: Semantic Normalization (The "Understand" Phase) -> NUOVO
         STADIO 1: Espansione Semantica (The "Think" Phase)
         STADIO 2: Ricerca Fuzzy con Filtro Dinamico (The Best-Match Logic)
         STADIO 3: Fallback Intelligente (Geographic Expansion)
         """
         actual_label = target_product if target_product is not None else label
         actual_location = target_geography if target_geography is not None else location
-        
+
         if not actual_label:
             return None
-            
-        label_lower = actual_label.lower().strip()
+
+        # ── STADIO 0: Semantic Normalization Pipeline ─────────────────────
+        # Normalizza l'input PRIMA di qualsiasi ricerca:
+        #   - Rimuove contenuti di contenitori (acqua, vino…)
+        #   - Estrae l'identità chimica core (PVC, PET, polypropylene…)
+        #   - Deduce la classe geometrica (profile, hollow, flat, solid…)
+        norm_result: NormalizationResult = _semantic_normalizer.normalize(actual_label)
+        normalized_label = norm_result.base_material
+        geometry_hint   = norm_result.geometry_hint
+
+        # Log auditabile della normalizzazione
+        if normalized_label.lower() != actual_label.lower().strip():
+            print(
+                f"[NORMALIZER] '{actual_label}' → base_material='{normalized_label}'"
+                f"{', geometry_hint=' + repr(geometry_hint) if geometry_hint else ''}"
+                f"{', inferred=' + str(norm_result.inferred_material) if norm_result.inferred_material else ''}"
+                f"{', strong_modifiers=' + str(norm_result.strong_modifiers) if norm_result.strong_modifiers else ''}"
+                f"{', stripped=' + str(norm_result.stripped_tokens) if norm_result.stripped_tokens else ''}"
+            )
+
+        # label_lower ora punta al materiale normalizzato (es. "PVC" invece di "PVC rigido per edilizia")
+        label_lower = normalized_label.lower().strip()
         exact_loc = actual_location.strip() if actual_location else ""
         canonical_loc = _normalise_location(actual_location)
 
-        cache_key = f"{label_lower}__{exact_loc}__{canonical_loc}_semantic_{task_type}_{has_transport}"
+        # Cache key usa l'etichetta originale per evitare collisioni tra input diversi
+        cache_key = (
+            f"{actual_label.lower().strip()}__{exact_loc}__{canonical_loc}"
+            f"_semantic_{task_type}_{has_transport}"
+        )
         if cache_key in self._match_cache:
             return self._match_cache[cache_key]
 
         if self._df.empty:
             return None
 
-        # STADIO 1: Espansione Semantica
+        # ── STADIO 1: Espansione Semantica ───────────────────────────────
+        # Opera sul materiale normalizzato (es. "PVC" → ["PVC", "polyvinyl chloride", …])
         search_terms = _expand_semantic_terms(label_lower)
 
-        # STADIO 3: Fallback Geografico (Outer Loop)
-        # 1. Forced Geographic Array: [location] + _get_regional_bin(location)
+        # ── STADIO 3: Fallback Geografico (Outer Loop) ───────────────────
         target_loc = exact_loc if exact_loc else (canonical_loc if canonical_loc else "Global")
-        
+
         geographies_to_try = [target_loc]
         if target_loc != "Global":
             if canonical_loc and canonical_loc != target_loc:
-                 geographies_to_try.append(canonical_loc)
+                geographies_to_try.append(canonical_loc)
             geographies_to_try.extend(_get_regional_bin(canonical_loc if canonical_loc else target_loc))
         else:
             geographies_to_try.extend(["Global", "Rest-of-World"])
-            
+
         # Remove duplicates preserving order
-        seen_geo = set()
+        seen_geo: set = set()
         geographies_to_try = [g for g in geographies_to_try if not (g in seen_geo or seen_geo.add(g))]
 
         result: Optional[dict] = None
-        
-        # 3. "Virgin-First" Logic Enforcement (Pass 1)
+
+        # Pass 1: Virgin-First Logic (soglia alta 0.85)
         for i, geo in enumerate(geographies_to_try):
             if i == 0:
-                print(f"[DEBUG] Stage 0: Cerco in {geo}...")
+                print(f"[DEBUG] Stage 0: Cerco '{label_lower}' in {geo}...")
             else:
                 print(f"[DEBUG] Nessun match in {geographies_to_try[i-1]}. Passo a {geo}...")
-                
+
             is_fallback = (geo != canonical_loc) if canonical_loc else False
-            row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.85, self._df, require_virgin=True, has_transport=has_transport)
+            row = self._search_best_match(
+                search_terms, label_lower, geo, task_type, 0.85, self._df,
+                require_virgin=True, has_transport=has_transport,
+                geometry_hint=geometry_hint,
+            )
             if row is not None:
                 result = self._build_result(row, location_fallback_used=is_fallback, requested_location=exact_loc, pass_number=1)
                 self._match_cache[cache_key] = result
@@ -380,13 +838,17 @@ class CSVLcaClient(LCADataProvider):
         # Pass 2: Fallback Standard se non esiste materiale virgin (soglia 0.70)
         for i, geo in enumerate(geographies_to_try):
             is_fallback = (geo != canonical_loc) if canonical_loc else False
-            row = self._search_best_match(search_terms, label_lower, geo, task_type, 0.70, self._df, require_virgin=False, has_transport=has_transport)
+            row = self._search_best_match(
+                search_terms, label_lower, geo, task_type, 0.70, self._df,
+                require_virgin=False, has_transport=has_transport,
+                geometry_hint=geometry_hint,
+            )
             if row is not None:
                 result = self._build_result(row, location_fallback_used=is_fallback, requested_location=exact_loc, pass_number=2)
                 self._match_cache[cache_key] = result
                 return result
 
-        # Hard Stop - Se non trovato nulla in nessuna geografia
+        # Hard Stop — nessun match trovato in nessuna geografia
         self._match_cache[cache_key] = result
         return result
 
@@ -408,9 +870,10 @@ class CSVLcaClient(LCADataProvider):
         return df_search
 
     def _search_best_match(
-        self, search_terms: List[str], original_label: str, loc: str, 
+        self, search_terms: List[str], original_label: str, loc: str,
         task_type: str, threshold: float, base_df: pd.DataFrame,
-        require_virgin: bool = False, has_transport: Optional[bool] = None
+        require_virgin: bool = False, has_transport: Optional[bool] = None,
+        geometry_hint: Optional[str] = None
     ) -> Optional[pd.Series]:
         """Return the best-matching DataFrame row evaluating all semantic terms with dynamic filters."""
         df_search = self._get_location_subset(loc, base_df)
@@ -466,6 +929,11 @@ class CSVLcaClient(LCADataProvider):
         if candidates.empty:
             print(f"[DEBUG] Geografia {loc} scartata (0 candidati validi dopo il filtro).")
             return None
+
+        # DIRETTIVA 1: Calcola l'intent UNA SOLA VOLTA per questa query (fuori dal loop)
+        search_intent = classify_search_intent(original_label)
+        if search_intent != "generic":
+            print(f"[INTENT] classify_search_intent('{original_label}') → '{search_intent}'")
 
         # STADIO 2: Best-Match Logic
         # Troviamo il candidato con la massima similarità usando difflib su entrambe le colonne
@@ -561,9 +1029,54 @@ class CSVLcaClient(LCADataProvider):
                     score += 0.2 # Standard bonus
                 
             if any(term in name_combined for term in penalty_terms):
-                score -= 0.5
-                print(f"[DEBUG] Declassato '{row['outputname']}' (-0.5) perché processo/prodotto finito/veicolo. Cerco materia prima...")
-                
+                # Se geometry_hint corrisponde al tipo del record, NON penalizzare:
+                # es. "tubo in PVC" ha geometry_hint='profile' → il record "pipe" è corretto
+                if geometry_hint and any(kw in name_combined for kw in _GEOMETRY_SIGNALS.get(geometry_hint, ())):
+                    pass  # Geometria richiesta: nessuna penalità
+                else:
+                    score -= 0.5
+                    print(f"[DEBUG] Declassato '{row['outputname']}' (-0.5) perché processo/prodotto finito/veicolo. Cerco materia prima...")
+
+            # Geometry Hint Bonus (dal SemanticNormalizer)
+            # Se l'utente ha implicato una geometria (es. "tubo" → "profile"),
+            # premiamo i record che matchano quella classe geometrica.
+            if geometry_hint:
+                hint_keywords = _GEOMETRY_SIGNALS.get(geometry_hint, ())
+                if any(kw in name_combined for kw in hint_keywords):
+                    score += 0.15
+                    print(f"[GEOMETRY] Bonus +0.15 a '{row['outputname']}' (geometry_hint='{geometry_hint}' confermato)")
+
+            # DIRETTIVA 1: Score Modifier Contestuale
+            # Agisce SOLO sullo score — non elimina il record dal pool candidati.
+            # Mantiene la reversibilità e l'auditabilità dei risultati.
+            if search_intent == "plastic_material":
+                # Penalizza dataset petroliferi/estrattivi in contesto plastica.
+                # -0.6 supera qualsiasi bonus possibile (max bonus attuale: +0.4)
+                # quindi un record petrolifero non può vincere, ma resta auditabile.
+                _petro_signals = {
+                    "petroleum", "petrol", "crude", "offshore",
+                    "oil field", "natural gas", "refin", "fossil",
+                }
+                if any(signal in name_combined for signal in _petro_signals):
+                    score -= 0.6
+                    print(
+                        f"[INTENT] plastic_material: penalizzato '{row['outputname']}' "
+                        f"(-0.6, segnali petroliferi in contesto plastica)"
+                    )
+            elif search_intent == "extraction_activity":
+                # Premia dataset estrattivi in contesto estrazione.
+                _extract_signals = {
+                    "petroleum", "crude", "extraction", "offshore",
+                    "natural gas", "oil production", "refin",
+                }
+                if any(signal in name_combined for signal in _extract_signals):
+                    score += 0.25
+                    print(
+                        f"[INTENT] extraction_activity: premiato '{row['outputname']}' "
+                        f"(+0.25, segnali estrattivi in contesto estrazione)"
+                    )
+            # "generic": nessuna modifica — comportamento attuale invariato
+
             if score > best_score:
                 best_score = score
                 best_row = row

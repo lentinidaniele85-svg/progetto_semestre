@@ -1,8 +1,114 @@
+import re
 from typing import List, Optional, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
-class ConstraintsExtract(BaseModel):
+# ---------------------------------------------------------------------------
+# DIRETTIVA 2: TransportValidatorMixin
+#
+# Mixin riusabile che fornisce validator deterministici per i campi logistici.
+# Ereditato da ConstraintsExtract e WorkflowAndBOMResponse per evitare
+# duplicazione del codice.
+#
+# Problema risolto: l'LLM può inserire '500 km' in transport_mode (errore)
+# o una stringa non numerica in distance_km (errore silenzioso in Pydantic v2).
+# I validator con mode='before' intercettano PRIMA della coercizione di tipo.
+# ---------------------------------------------------------------------------
+class TransportValidatorMixin(BaseModel):
+    """Validator deterministici per distance_km e transport_mode.
+
+    Regola distance_km (mode='before'):
+      - Se stringa tipo '500 km' o '1.500': estrae la parte numerica con regex.
+      - Se non numerica e non None: solleva ValueError.
+      - Se None: passa (campo opzionale).
+
+    Regola transport_mode (mode='before'):
+      - Normalizza varianti ('truck' → 'lorry', 'nave' → 'ship').
+      - Se contiene un digit (\\d): solleva ValueError con messaggio esplicito
+        che guida l'LLM a rieseguire l'estrazione correttamente.
+      - Se non mappabile: solleva ValueError.
+      - Se None: passa (campo opzionale).
+    """
+
+    @field_validator("distance_km", mode="before", check_fields=False)
+    @classmethod
+    def coerce_distance_km(cls, v):
+        """Estrae la parte numerica da stringhe tipo '500 km' invece di fallire."""
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            val = float(v)
+            if val <= 0:
+                raise ValueError(
+                    f"distance_km deve essere un numero positivo, ricevuto: {val}. "
+                    "Inserire la distanza in km (es. 500)."
+                )
+            return val
+        if isinstance(v, str):
+            # Estrai la parte numerica: supporta '500 km', '1.500', '1,500.5'
+            cleaned = v.strip().replace(",", ".")
+            match = re.search(r"\d+(?:\.\d+)?", cleaned)
+            if match:
+                val = float(match.group())
+                if val <= 0:
+                    raise ValueError(
+                        f"distance_km estratto da '{v}' è {val} (non positivo). "
+                        "Inserire una distanza maggiore di zero."
+                    )
+                return val
+            raise ValueError(
+                f"distance_km non contiene un valore numerico valido: '{v}'. "
+                "Inserire solo il numero in km (es. 500). "
+                "NON includere unità di misura nel campo."
+            )
+        raise ValueError(f"distance_km: tipo non supportato {type(v).__name__}")
+
+    @field_validator("transport_mode", mode="before", check_fields=False)
+    @classmethod
+    def coerce_transport_mode(cls, v):
+        """Normalizza sinonimi e rifiuta valori numerici in transport_mode."""
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise ValueError(
+                f"transport_mode deve essere una stringa, ricevuto {type(v).__name__}. "
+                "Valori ammessi: 'lorry', 'ship', 'aircraft'."
+            )
+        v_stripped = v.strip()
+        # GUARD: rifiuta stringhe con numeri (es. '500 km', '2 giorni')
+        # Questi valori appartengono a distance_km, non a transport_mode.
+        if re.search(r"\d", v_stripped):
+            raise ValueError(
+                f"transport_mode contiene un numero ('{v_stripped}'). "
+                "Questo campo accetta SOLO la modalità di trasporto: 'lorry', 'ship', 'aircraft'. "
+                "Il valore numerico appartiene al campo distance_km."
+            )
+        v_lower = v_stripped.lower()
+        _TRANSPORT_NORMALIZER: dict = {
+            # Lorry/truck
+            "lorry": "lorry", "truck": "lorry", "camion": "lorry",
+            "road": "lorry", "strada": "lorry", "tir": "lorry",
+            # Ship
+            "ship": "ship", "nave": "ship", "sea": "ship",
+            "maritime": "ship", "ferry": "ship", "traghetto": "ship",
+            "container ship": "ship", "cargo": "ship",
+            # Aircraft
+            "aircraft": "aircraft", "airplane": "aircraft",
+            "air": "aircraft", "aereo": "aircraft",
+            "air freight": "aircraft", "plane": "aircraft",
+        }
+        normalized = _TRANSPORT_NORMALIZER.get(v_lower)
+        if normalized is None:
+            raise ValueError(
+                f"transport_mode '{v_stripped}' non riconosciuto. "
+                "Valori ammessi (e sinonimi accettati): "
+                "'lorry' (truck, camion), 'ship' (nave, ferry), 'aircraft' (aereo, airplane)."
+            )
+        return normalized
+
+
+
+class ConstraintsExtract(TransportValidatorMixin):
     budget: Optional[str] = None
     aesthetics: Optional[str] = None
     structural_requirements: Optional[str] = None
@@ -30,8 +136,20 @@ class ConstraintsExtract(BaseModel):
             "Usato per calcolare la distanza fornitore\u2192sito."
         )
     )
-    distance_km: Optional[float] = Field(default=None, description="Distanza di trasporto in km.")
-    transport_mode: Optional[str] = Field(default=None, description="Mezzo di trasporto (es. ship, lorry).")
+    distance_km: Optional[float] = Field(
+        default=None,
+        description=(
+            "Distanza di trasporto in km. SOLO valore numerico positivo (es. 500). "
+            "NON inserire unità di misura. NON inserire la modalità di trasporto qui."
+        )
+    )
+    transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(
+        default=None,
+        description=(
+            "Modalità di trasporto. SOLO uno di: 'lorry', 'ship', 'aircraft'. "
+            "NON inserire distanze, numeri o unità di misura in questo campo."
+        )
+    )
 
 
 class BOMComponent(BaseModel):
@@ -98,19 +216,22 @@ class WorkflowStep(BaseModel):
 class WorkflowPlannerOutput(BaseModel):
     searches: List[ProcessSearch] = Field(description="Searches to query DataSet.xlsx for the manufacturing steps")
 
-class WorkflowAndBOMResponse(BaseModel):
+class WorkflowAndBOMResponse(TransportValidatorMixin):
     is_material_only: bool = Field(description="Vero se l'input è solo un materiale grezzo, Falso se è un prodotto.")
     is_interview_complete: bool = Field(description="True se l'utente ha fornito Massa, Materiale, Geografia e i 4 Pilastri.")
     interview_questions: List[str] = Field(default_factory=list, description="Domande se i dati obbligatori mancano.")
     geography: Optional[str] = Field(default=None, description="Luogo o distanza per la logistica. CRITICAL DIRECTIVE: DO NOT GUESS OR INFER THIS VALUE BASED ON LANGUAGE OR CONTEXT. IF THE USER DOES NOT EXPLICITLY WRITE A GEOGRAPHY OR COUNTRY, YOU ABSOLUTELY MUST RETURN NULL.")
-    distance_km: Optional[float] = Field(default=None, ge=0.0, description="Distanza stimata in km tra fornitore e sito, se esplicitata")
+    distance_km: Optional[float] = Field(
+        default=None,
+        description="Distanza stimata in km tra fornitore e sito, se esplicitata. SOLO valore numerico positivo."
+    )
     total_mass_kg: Optional[float] = Field(default=None, gt=0.0, description="Massa totale in kg per la logistica.")
     assumptions_made: List[str] = Field(default_factory=list, description="Assunzioni fatte dall'IA (es. materiale inferito).")
     workflow_steps: List[WorkflowStep] = Field(default_factory=list, description="List of generic sequential manufacturing processes.")
     components: List[BOMComponent] = Field(default_factory=list, description="Componenti del prodotto con massa, geometria e materiale.")
     transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(
         default=None,
-        description="Modalità di trasporto. Inferire solo se esplicitato dall'utente (es. lorry, ship, aircraft)."
+        description="Modalità di trasporto. SOLO: 'lorry', 'ship', 'aircraft'. NON inserire distanze o numeri."
     )
     supplier_country: Optional[str] = Field(
         default=None,
