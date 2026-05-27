@@ -630,39 +630,38 @@ with right_col:
                     else:
                         display_bom.append(item)
                 
-                if task_type == "modeling":
-                    transport_comp = next((c for c in state.get("lca_results", []) if c.get("component_name") == "Transport"), None)
-                    if transport_comp:
+                transport_comp = next((c for c in state.get("lca_results", []) if c.get("component_name") == "Transport"), None)
+                if transport_comp:
+                    t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
+                    mat_name = transport_comp.get("original_material", f"{t_mode.capitalize()} transport")
+                    amount = transport_comp.get("original_scores", {}).get("amount", "-")
+                    if amount != "-":
+                        mat_name += f" (Amount: {amount:.1f} tkm)"
+                    impact = transport_comp.get("original_scores", {}).get("environmental_impact", 0.0)
+                    
+                    display_bom.append({
+                        "name": "Transport",
+                        "material": mat_name,
+                        "weight_kg": "-",
+                        "functional_role": "Logistics",
+                        "baseline_environmental_impact": impact,
+                        "baseline_cost": 0.0,
+                        "lifespan_years": "-",
+                    })
+                else:
+                    dist = state.get("logistics_data", {}).get("distance_km", 0.0)
+                    if dist:
                         t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
-                        mat_name = transport_comp.get("original_material", f"{t_mode.capitalize()} transport")
-                        amount = transport_comp.get("original_scores", {}).get("amount", "-")
-                        if amount != "-":
-                            mat_name += f" (Amount: {amount:.1f})"
-                        impact = transport_comp.get("original_scores", {}).get("unit_material_impact", 0.0)
-                        
+                        from core.config import TRANSPORT_IMPACT_PER_TKM
                         display_bom.append({
                             "name": "Transport",
-                            "material": mat_name,
+                            "material": f"{t_mode.capitalize()} transport ({dist} km)",
                             "weight_kg": "-",
                             "functional_role": "Logistics",
-                            "baseline_environmental_impact": impact,
+                            "baseline_environmental_impact": TRANSPORT_IMPACT_PER_TKM,
                             "baseline_cost": 0.0,
                             "lifespan_years": "-",
                         })
-                    else:
-                        dist = state.get("logistics_data", {}).get("distance_km", 0.0)
-                        if dist:
-                            t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
-                            from core.config import TRANSPORT_IMPACT_PER_TKM
-                            display_bom.append({
-                                "name": "Transport",
-                                "material": f"{t_mode.capitalize()} transport ({dist} km)",
-                                "weight_kg": "-",
-                                "functional_role": "Logistics",
-                                "baseline_environmental_impact": TRANSPORT_IMPACT_PER_TKM,
-                                "baseline_cost": 0.0,
-                                "lifespan_years": "-",
-                            })
                         
                 bom_df = pd.DataFrame(display_bom)
                 bom_df = bom_df.rename(columns={k: v for k, v in _col_map.items() if k in bom_df.columns})

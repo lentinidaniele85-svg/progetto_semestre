@@ -113,7 +113,11 @@ class ConstraintsExtract(TransportValidatorMixin):
     aesthetics: Optional[str] = None
     structural_requirements: Optional[str] = None
     weight_limit_kg: Optional[float] = Field(default=None, gt=0.0)
-    mass: Optional[float] = Field(default=None, gt=0.0, description="Massa o peso esplicito in kg (es. '1 kg', '5kg'). Da usare assolutamente se l'input specifica una quantità.")
+    mass: Optional[float] = Field(
+        default=None, 
+        gt=0.0, 
+        description="Massa o peso esplicito in kg. Restituisci null SE E SOLO SE l'utente non specifica alcuna quantità."
+    )
     geography: Optional[str] = Field(default=None, description="Area geografica o nazione (es. 'Italia', 'Francia', 'Europa'). Da estrarre se esplicitata nell'input. CRITICAL DIRECTIVE: DO NOT GUESS OR INFER THIS VALUE BASED ON LANGUAGE OR CONTEXT. IF THE USER DOES NOT EXPLICITLY WRITE A GEOGRAPHY OR COUNTRY, YOU ABSOLUTELY MUST RETURN NULL.")
     recyclability_required: Optional[bool] = None
     dimensions: Optional[str] = Field(default=None, description="Dimensioni del prodotto (es. 50x50x90cm). 1 dei 4 Pilastri.")
@@ -144,10 +148,10 @@ class ConstraintsExtract(TransportValidatorMixin):
         )
     )
     transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(
-        default=None,
+        default="lorry",
         description=(
-            "Modalità di trasporto. SOLO uno di: 'lorry', 'ship', 'aircraft'. "
-            "NON inserire distanze, numeri o unità di misura in questo campo."
+            "Modalità di trasporto principale. Mappa tassativamente 'Nave' o 'Ship' -> 'ship', "
+            "'Aereo' -> 'aircraft', 'Camion'/'Lorry' -> 'lorry'."
         )
     )
 

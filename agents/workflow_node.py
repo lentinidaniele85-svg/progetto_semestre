@@ -434,8 +434,7 @@ ASSUMPTION-FIRST RULES (mandatory):
 - ALWAYS set is_interview_complete=True and interview_questions=[] UNLESS the description
   is completely unintelligible (e.g. a single word with no context at all).
 - CRITICAL: If 'mass' or 'geography' are already provided in Constraints, DO NOT infer them and DO NOT create an assumption for them. Use the provided constraints explicitly!
-- If mass is missing in Constraints → infer it from the product category (chair=4.5kg, 500mL bottle=0.025kg,
-  generic part=1.0kg) and record the assumption.
+- CRITICAL: If mass is missing in Constraints → DO NOT INFER IT. You MUST leave total_mass_kg as null so the system can ask the user.
 - If material is missing → choose the most plausible one by technical exclusion (Step 3)
   and record the assumption.
 - If geography is missing in Constraints → default to RER (Europe) or GLO and record the assumption.
@@ -481,69 +480,85 @@ ALWAYS ensure:
         is_material_only = result.is_material_only
         is_interview_complete = result.is_interview_complete
 
+        # --- PASSO 7: GAP ANALYSIS COGNITIVA ---
+
+        thought_log = state.get("thought_log", [])
+        assumptions = state.get("assumptions_list", [])
         attempt_count = state.get("interview_attempt_count", 0)
-        
-        # 1. Determina dati mancanti
-        missing = []
+
+        # --- INIEZIONE ATTIVA DEI CONSTRAINTS ---
+        # Forza i valori dai constraints se presenti per evitare che l'LLM li ignori o perda nel parsing
+        if constraints.get("mass") is not None:
+            result.total_mass_kg = constraints["mass"]
+        if constraints.get("geography") and constraints.get("geography", "").lower() not in ["not specified", "unknown geography", ""]:
+            result.geography = constraints["geography"]
+        if constraints.get("distance_km") is not None:
+            result.distance_km = constraints["distance_km"]
+
+        # Dati estratti dall'LLM strutturato (ora sovrascritti coi constraints certi)
+        is_material_only = result.is_material_only
         mass = result.total_mass_kg
+        geography = result.geography
         dist_km = result.distance_km
-        
+
+        # Mappiamo analiticamente cosa manca
+        missing_fields = []
         if mass is None and not is_material_only:
-            missing.append("massa")
-        if geography.lower() in ["not specified", "unknown geography", ""]:
-            missing.append("luogo (geografia)")
-        # La distanza viene chiesta al primo tentativo di intervista.
-        # Se l'utente non la fornisce, al secondo tentativo si usa has_transport=False
-        # → il sistema sceglie automaticamente il dataset 'market for'.
-        transport_mode = getattr(result, "transport_mode", None)
-        needs_distance = (not is_material_only) or bool(result.supplier_country) or (transport_mode is not None)
-        
-        if dist_km is None and needs_distance and attempt_count == 0:
-            missing.append("distanza di trasporto (km)")
-            
-        needs_interview = len(missing) > 0 or not is_interview_complete
-        
-        if needs_interview:
+            missing_fields.append("massa")
+        if not geography or geography.lower() in ["not specified", "unknown geography", ""]:
+            missing_fields.append("luogo (geografia)")
+        if dist_km is None and not is_material_only:
+            missing_fields.append("distanza di trasporto")
+
+        # Se ci sono dati mancanti, attiviamo la logica condizionale sui tentativi
+        if missing_fields:
             if attempt_count == 0:
-                attempt_count += 1
-                msg = ""
-                if missing:
-                    msg = f"Mancano alcune informazioni importanti: {', '.join(missing)}. Puoi fornirle?\n"
-                
-                for q in result.interview_questions:
-                    msg += f"- {q}\n"
-                    
-                if not msg.strip():
-                    msg = "Mi mancano alcune informazioni per poter procedere. Puoi fornire maggiori dettagli?"
-                
-                if ita:
-                    thought_log.append("Interruzione: dati mancanti al primo tentativo. In attesa di risposta utente.")
+                # =========================================================
+                # TENTATIVO 0: Interrompiamo il grafo e chiediamo all'utente
+                # =========================================================
+                if len(missing_fields) == 1 and "massa" in missing_fields:
+                    # Messaggio specifico richiesto per la massa
+                    msg = "Manca la massa. Puoi specificare quanti kg di prodotto vuoi analizzare?"
                 else:
-                    thought_log.append("Interrupt: missing data. Waiting for user response.")
+                    # Messaggio cumulativo se la massa c'è ma manca altro o se mancano più campi
+                    campi_str = ", ".join(missing_fields)
+                    msg = f"Mancano alcune informazioni importanti: {campi_str}. Puoi fornirle?"
+                
+                thought_log.append(f"Gap Analysis (Tentativo 1): Campi mancanti {missing_fields}. Richiesta feedback via UI.")
                 
                 return {
-                    "pending_feedback": msg.strip(),
+                    "pending_feedback": msg,
                     "thought_log": thought_log,
                     "assumptions_list": assumptions,
-                    "current_lca_step": 2,
                     "current_phase": "interview",
-                    "interview_attempt_count": attempt_count,
+                    "current_lca_step": 7,
+                    "interview_attempt_count": 1, # Al prossimo giro entrerà nel ramo autonomo
                 }
-            else:
-                # Secondo tentativo: fai assunzioni per i dati ancora mancanti
-                if mass is None and not is_material_only:
+                
+            elif attempt_count == 1:
+                # =========================================================
+                # TENTATIVO 1: L'utente ha saltato la domanda -> Fallback deterministici
+                # =========================================================
+                thought_log.append("Gap Analysis (Tentativo 2): Dati ancora assenti. Applicazione gerarchia di default.")
+                
+                if "massa" in missing_fields:
                     mass = 1.0
-                    result.total_mass_kg = 1.0
-                    assumptions.append("Massa non fornita dall'utente, assunto default di 1.0 kg.")
-                if geography.lower() in ["not specified", "unknown geography", ""]:
-                    # Nessun luogo specificato: il DB cercherà GLO automaticamente
-                    geography = "GLO"
-                    assumptions.append("Luogo non fornito dall'utente al secondo tentativo. Utilizzo GLO (Global) come proxy di default mondiale.")
-                # Distanza: se ancora mancante al 2° tentativo, NON viene assegnato un default.
-                # has_transport=False → il sistema usa i dataset 'market for',
-                # che includono già la logistica media al punto di consegna.
-                if dist_km is None:
-                    assumptions.append("Distanza non fornita dall'utente. Utilizzati dataset 'market for' che includono la logistica media.")
+                    result.total_mass_kg = 1.0  # Aggiorniamo la distinta base effettiva
+                    assumptions.append("Massa non specificata: assunto valore di default di 1.0 kg.")
+                    
+                if "luogo (geografia)" in missing_fields:
+                    geography = "RER"
+                    result.geography = "RER"
+                    assumptions.append("Geografia non specificata: assunto mercato europeo (RER).")
+                    
+                if "distanza di trasporto" in missing_fields:
+                    dist_km = None
+                    result.distance_km = None  # has_transport diventa False -> forzerà l'uso di 'market for'
+                    assumptions.append("Distanza non specificata: il sistema utilizzerà i dataset 'market for'.")
+
+        # Se siamo qui (o perché i dati c'erano, o perché l'utente ha risposto al tentativo 0, 
+        # o perché abbiamo applicato i default al tentativo 1), il workflow può procedere.
+        current_phase = "workflow"
 
         # T05: Step 3 — Selezione Materiale (inferenza LLM completata)
         if ita:
@@ -552,6 +567,24 @@ ALWAYS ensure:
             thought_log.append("Step 3: Material selection completed.")
 
         bom = []
+
+        # --- PRE-CALCOLO PER RI-PROPORZIONARE I PESI ---
+        components_list = result.components or []
+        num_comps = len(components_list)
+        total_llm_weight = sum((getattr(c, "weight_kg", 0.0) or 0.0 for c in components_list), 0.0)
+        
+        scale_factor = 1.0
+        fallback_weight_per_comp = None
+        
+        if mass is not None and mass > 0 and num_comps > 0:
+            if total_llm_weight > 0:
+                if abs(total_llm_weight - mass) > 0.01:
+                    scale_factor = mass / total_llm_weight
+                    thought_log.append(f"Ricalcolo proporzionale pesi componenti per farli coincidere con la massa totale ({mass:.2f} kg).")
+            else:
+                # LLM ha generato componenti a peso zero (o mancante). Ripartizione equa.
+                fallback_weight_per_comp = mass / num_comps
+                thought_log.append("[Gap Analysis] Componenti generati con peso nullo. Ripartizione equa della massa totale.")
 
         # T05: Step 4 — Vincolo Geometrico & Fuzzy Match materiali
         if not is_material_only:
@@ -567,6 +600,13 @@ ALWAYS ensure:
 
         for comp_data in result.components or []:
             comp = comp_data.model_dump()
+            
+            # Applica proporzione al peso se necessaria
+            if fallback_weight_per_comp is not None:
+                comp["weight_kg"] = round(fallback_weight_per_comp, 4)
+            elif scale_factor != 1.0 and comp.get("weight_kg") is not None:
+                comp["weight_kg"] = round(comp["weight_kg"] * scale_factor, 4)
+
             mat = comp.get("material", "unknown")
             import re
             mat = re.sub(r'\s*\([^)]*\)', '', mat)
@@ -576,7 +616,7 @@ ALWAYS ensure:
             # 1. Fuzzy Match del materiale nel DataSet.xlsx
             comp_dist = comp.get("distance_km")
             eff_dist = comp_dist if comp_dist is not None else (dist_km or 0.0)
-            has_transport = eff_dist > 0
+            has_transport = dist_km is not None and dist_km > 0
             best_match = await provider.find_closest_match(
                 mat,
                 location=geography,

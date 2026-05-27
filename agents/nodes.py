@@ -169,9 +169,12 @@ async def lca_validator(state: AgentState) -> dict:
         lca_results: list[dict] = []
         assumptions = list(state.get("assumptions_list", []))
 
+        constraints = state.get("constraints") or {}
         logistics = state.get("logistics_data", {})
-        dist_km = logistics.get("distance_km") or 0.0
-        geography = logistics.get("geography", "GLO")
+        dist_km = constraints.get("distance_km")
+        if dist_km is None:
+            dist_km = logistics.get("distance_km") or 0.0
+        geography = constraints.get("geography") or logistics.get("geography", "GLO")
         
         has_market_material = False
 
@@ -186,10 +189,25 @@ async def lca_validator(state: AgentState) -> dict:
 
             original_material = orig_comp["material"]
             mass_kg = orig_comp.get("weight_kg", 1.0)
-            process_name = orig_comp.get("manufacturing_process", "Injection moulding")
-            process_impact = PROCESS_IMPACTS.get(process_name, 1.0)
+            
+            GEOMETRY_TO_PROCESS = {
+                "Corpi Cavi": "Blow moulding",
+                "Pezzi Pieni Complessi": "Injection moulding",
+                "Film": "Film extrusion",
+                "Profili/Tubi": "Tube extrusion"
+            }
+            process_name = GEOMETRY_TO_PROCESS.get(orig_comp.get("geometry"), "Injection moulding")
 
             task_type = (state.get("constraints") or {}).get("task_type", "optimization")
+            
+            # --- Ricerca Dinamica Processo ---
+            proc_match = provider.find_closest_match(label=process_name, location=geography, has_transport=False)
+            if proc_match and proc_match.get("climatechangeimpact") is not None:
+                process_impact = proc_match["climatechangeimpact"]
+                thought_log.append(f"[LCA Validation] Processo '{process_name}' associato al record: {proc_match.get('processname', '?')}")
+            else:
+                process_impact = PROCESS_IMPACTS.get(process_name, 1.0)
+                thought_log.append(f"[LCA Validation] Processo '{process_name}' non trovato, uso default hardcoded.")
             
             # Impatto materiale originale
             thought_log.append(f"Termine tradotto: {original_material}")
@@ -348,11 +366,12 @@ async def lca_validator(state: AgentState) -> dict:
                     alt_cost = alt_match.get("cost_per_kg") or alt.get("estimated_cost_per_kg", 1.0)
 
                 # L'impatto del trasporto è gestito globalmente alla fine.
-                # Qui manteniamo solo l'impatto materiale per il confronto.
+                # Per ottimizzazione eseguiamo lo stesso identico calcolo LCA (Materiale + Processo)
                 alt_mat_total = alt_mat_impact * mass_kg
+                alt_total_impact = alt_mat_total + proc_total_impact if task_type == "optimization" else alt_mat_total
 
                 scores = {
-                    "environmental_impact": alt_mat_total,
+                    "environmental_impact": alt_total_impact,
                     "unit_material_impact": alt_mat_impact,
                     "energy_mj": alt_energy * mass_kg,
                     "cost_tier": 1 if alt_cost < 1.0 else (2 if alt_cost < 3.0 else (3 if alt_cost < 10.0 else 4)),
@@ -417,20 +436,28 @@ async def lca_validator(state: AgentState) -> dict:
 
         for orig_comp in (state.get("bom") or []):
             mass_kg = orig_comp.get("weight_kg", 1.0)
-            comp_dist = orig_comp.get("distance_km")
-            eff_dist = comp_dist if comp_dist is not None else dist_km
             comp_mode = (orig_comp.get("transport_mode") or global_mode).lower()
+            
+            eff_dist = orig_comp.get("distance_km") or logistics.get("distance_km") or 0
             
             if eff_dist > 0:
                 c_tkm = (mass_kg / 1000.0) * eff_dist
                 total_tkm += c_tkm
-                if comp_mode == "ship":
-                    c_factor = SHIP_IMPACT_PER_TKM
-                elif comp_mode == "aircraft":
-                    c_factor = AIRCRAFT_IMPACT_PER_TKM
+                
+                transp_match = provider.find_closest_match(label=comp_mode, location=geography, has_transport=True)
+                if transp_match and transp_match.get("climatechangeimpact") is not None:
+                    c_factor = transp_match["climatechangeimpact"]
+                    thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' associato al record: {transp_match.get('processname', '?')}")
                 else:
-                    c_factor = TRANSPORT_IMPACT_PER_TKM
-                transport_impact_total += c_tkm * c_factor
+                    c_factor = SHIP_IMPACT_PER_TKM if comp_mode == "ship" else (AIRCRAFT_IMPACT_PER_TKM if comp_mode == "aircraft" else TRANSPORT_IMPACT_PER_TKM)
+                    thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' non trovato nel DB, uso fallback.")
+                
+                component_transport_impact = c_tkm * c_factor
+                transport_impact_total += component_transport_impact
+            else:
+                # DISTANZA ASSENTE O ZERO: Il trasporto è incluso nel 'market for'
+                component_transport_impact = 0
+                thought_log.append(f"[LCA Validation] Componente '{orig_comp.get('name')}': nessuna distanza specificata. Impatto trasporto extra impostato a 0 (incluso nel dataset 'market for').")
 
         transport_name = "Mixed Logistics (Dinamicamente Calcolata)"
         if total_tkm == 0:
@@ -595,9 +622,41 @@ async def human_feedback_processor(state: AgentState) -> dict:
         # Fase di intervista: qualsiasi risposta è una risposta alle domande mancanti
         if current_phase == "interview":
             new_user_input = state.get("user_input", "") + f"\n\n[User Interview Response]: {feedback}"
-            thought_log.append("Interview response added to user input.")
+            thought_log.append(f"Interview response received. Extracting missing constraints...")
+            
+            # --- INGESTIONE ATTIVA DEI CONSTRAINTS ---
+            llm = ModelFactory.get_model()
+            chain = llm.with_structured_output(ConstraintsExtract)
+            
+            messages = [
+                SystemMessage(
+                    content=(
+                        "You are a product design analyst. The user just provided missing "
+                        "information for a product (e.g., mass, geography, transport distance). "
+                        "Extract these fields from the user's response. "
+                        "Return ONLY fields explicitly stated or strongly implied in the response."
+                    )
+                ),
+                HumanMessage(content=feedback),
+            ]
+            
+            try:
+                extracted_result: ConstraintsExtract = await _ainvoke_structured(
+                    chain, llm, ConstraintsExtract, messages
+                )
+                new_constraints = extracted_result.model_dump(exclude_none=True)
+                current_constraints = dict(state.get("constraints", {}))
+                
+                if new_constraints:
+                    current_constraints.update(new_constraints)
+                    thought_log.append(f"Constraints actively updated from interview: {list(new_constraints.keys())}")
+            except Exception as exc:
+                logger.warning(f"Failed to extract constraints from interview response: {exc}")
+                current_constraints = state.get("constraints", {})
+            
             return {
                 "user_input": new_user_input,
+                "constraints": current_constraints,
                 "pending_feedback": None,
                 "thought_log": thought_log,
                 "current_phase": "constraints",
