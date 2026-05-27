@@ -71,56 +71,60 @@ def generate_html_report(state: dict) -> str:
     reduction_pct = ((total_orig - total_opt) / total_orig * 100) if total_orig else 0.0
 
     def _bom_rows() -> str:
-        rows = ""
+        display_bom = []
         for item in bom:
-            name = item.get('name', '')
-            mat = item.get('material', '')
-            w = item.get('weight_kg', '')
-            proc = item.get('manufacturing_process', '')
+            display_bom.append({
+                "name": f"{item.get('name', '')} (Material)",
+                "material": item.get('material', ''),
+                "weight_kg": item.get('weight_kg', '')
+            })
             
-            if task_type == "modeling":
-                rows += (
-                    f"<tr><td>{name} (Material)</td>"
-                    f"<td>{mat}</td>"
-                    f"<td>{w}</td></tr>"
-                )
-                if proc:
-                    rows += (
-                        f"<tr><td>{name} (Manufacturing)</td>"
-                        f"<td>{proc}</td>"
-                        f"<td>{w}</td></tr>"
-                    )
-            else:
-                rows += (
-                    f"<tr><td>{name}</td>"
-                    f"<td>{mat}</td>"
-                    f"<td>{w}</td></tr>"
-                )
+            proc = item.get("manufacturing_process")
+            if proc:
+                if isinstance(proc, list):
+                    for p in proc:
+                        display_bom.append({
+                            "name": f"{item.get('name', '')} (Manufacturing)",
+                            "material": p,
+                            "weight_kg": item.get('weight_kg', '')
+                        })
+                else:
+                    display_bom.append({
+                        "name": f"{item.get('name', '')} (Manufacturing)",
+                        "material": proc,
+                        "weight_kg": item.get('weight_kg', '')
+                    })
         
-        # Aggiunta Trasporto alla BOM per modelling
-        if task_type == "modeling":
-            transport_comp = next((c for c in lca_results if c.get("component_name") == "Transport"), None)
-            if transport_comp:
+        # Aggiunta Trasporto alla BOM
+        transport_comp = next((c for c in lca_results if c.get("component_name") == "Transport"), None)
+        if transport_comp:
+            t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
+            mat_name = transport_comp.get("original_material", f"{t_mode.capitalize()} transport")
+            amount = transport_comp.get("original_scores", {}).get("amount", "-")
+            if amount != "-":
+                mat_name += f" (Amount: {amount:.1f} tkm)"
+            display_bom.append({
+                "name": "Transport",
+                "material": mat_name,
+                "weight_kg": "-"
+            })
+        else:
+            dist = state.get("logistics_data", {}).get("distance_km", 0.0)
+            if dist:
                 t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
-                mat_name = transport_comp.get("original_material", f"{t_mode.capitalize()} transport")
-                amount = transport_comp.get("original_scores", {}).get("amount", "-")
-                if amount != "-":
-                    mat_name += f" (Amount: {amount:.1f})"
-                rows += (
-                    f"<tr><td>Transport</td>"
-                    f"<td>{mat_name}</td>"
-                    f"<td>-</td></tr>"
-                )
-            else:
-                dist = state.get("logistics_data", {}).get("distance_km", 0.0)
-                if dist:
-                    t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
-                    rows += (
-                        f"<tr><td>Transport</td>"
-                        f"<td>{t_mode.capitalize()} transport ({dist} km)</td>"
-                        f"<td>-</td></tr>"
-                    )
-                
+                display_bom.append({
+                    "name": "Transport",
+                    "material": f"{t_mode.capitalize()} transport ({dist} km)",
+                    "weight_kg": "-"
+                })
+
+        rows = ""
+        for row in display_bom:
+            rows += (
+                f"<tr><td>{row['name']}</td>"
+                f"<td>{row['material']}</td>"
+                f"<td>{row['weight_kg']}</td></tr>"
+            )
         return rows
 
     def _opt_rows() -> str:
@@ -156,7 +160,26 @@ def generate_html_report(state: dict) -> str:
 
     def _workflow_rows() -> str:
         rows = ""
-        for i, step in enumerate(workflow_steps, 1):
+        combined_steps = []
+        
+        for item in bom:
+            proc = item.get('manufacturing_process')
+            if proc:
+                w = item.get('weight_kg', '')
+                combined_steps.append({
+                    'process_name': proc,
+                    'process_output': f"{w} kg" if str(w).strip() else "-"
+                })
+                
+        for step in workflow_steps:
+            if isinstance(step, dict):
+                p_name = step.get('process_name', '')
+                if not any(isinstance(s, dict) and s.get('process_name') == p_name for s in combined_steps):
+                    combined_steps.append(step)
+            else:
+                combined_steps.append(step)
+
+        for i, step in enumerate(combined_steps, 1):
             if isinstance(step, dict):
                 rows += f"<tr><td>{i}</td><td>{step.get('process_name', '')}</td><td>{step.get('process_output', '')}</td></tr>"
             else:
@@ -164,14 +187,24 @@ def generate_html_report(state: dict) -> str:
         return rows
 
     def _assumptions_list() -> str:
+        constraints = state.get("constraints", {})
+        html = ""
+        if constraints:
+            html += "<strong>Vincoli Estratti (Constraints):</strong><ul>"
+            for k, v in constraints.items():
+                html += f"<li><strong>{k}</strong>: {v}</li>"
+            html += "</ul><hr style='border:none; border-top:1px solid #ddd; margin:12px 0;'/>"
+
         unique_assumptions = list(dict.fromkeys(assumptions_list))
         filtered_assumptions = [
             a for a in unique_assumptions
             if "nessuna assunzione" not in a.lower() and "no assumption" not in a.lower()
         ]
         if not filtered_assumptions:
-            return "<p>Nessun dato esterno o assunzione aggiuntiva trovata.</p>"
-        html = "<ul>"
+            html += "<p>Nessun dato esterno o assunzione aggiuntiva trovata.</p>"
+            return html
+            
+        html += "<strong>Assunzioni del Modello:</strong><ul>"
         for a in filtered_assumptions:
             html += f"<li>{a}</li>"
         html += "</ul>"

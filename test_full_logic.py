@@ -50,7 +50,7 @@ def check(name: str, passed: bool, detail: str = ""):
 # SEZIONE 1: csv_lca_client - Regola market for / waste
 # ---------------------------------------------------------------------------
 
-def test_csv_lca_rules():
+async def test_csv_lca_rules():
     print("\n" + "=" * 70)
     print("SEZIONE 1 - csv_lca_client: market for / waste / produzione")
     print("=" * 70)
@@ -58,14 +58,14 @@ def test_csv_lca_rules():
 
     # Test A
     print("\n[A] Nessuna distanza (has_transport=False) -> deve usare 'market for'")
-    res = client.find_closest_match("polypropylene", location="RER", has_transport=False)
+    res = await client.find_closest_match("polypropylene", location="RER", has_transport=False)
     proc = res.get("providerName", "") if res else ""
     ok = "market for" in proc.lower()
     check("A: has_transport=False -> market for polypropylene", ok, f"providerName='{proc}'")
 
     # Test B
     print("\n[B] Distanza presente (has_transport=True) -> NON deve usare 'market for'")
-    res = client.find_closest_match("polypropylene", location="RER", has_transport=True)
+    res = await client.find_closest_match("polypropylene", location="RER", has_transport=True)
     proc = res.get("providerName", "") if res else ""
     ok = "market for" not in proc.lower()
     check("B: has_transport=True -> NO market for polypropylene", ok, f"providerName='{proc}'")
@@ -76,7 +76,7 @@ def test_csv_lca_rules():
     for mat in ["polypropylene", "polyethylene", "steel"]:
         for geo in ["RER", "Global", "Italy"]:
             for ht in [True, False, None]:
-                res = client.find_closest_match(mat, location=geo, has_transport=ht)
+                res = await client.find_closest_match(mat, location=geo, has_transport=ht)
                 if res:
                     fn = res.get("flowName", "").lower()
                     pn = res.get("providerName", "").lower()
@@ -90,21 +90,21 @@ def test_csv_lca_rules():
 
     # Test D
     print("\n[D] has_transport=None -> market for (come False)")
-    res = client.find_closest_match("polypropylene", location="RER", has_transport=None)
+    res = await client.find_closest_match("polypropylene", location="RER", has_transport=None)
     proc = res.get("providerName", "") if res else ""
     ok = "market for" in proc.lower()
     check("D: has_transport=None -> market for polypropylene", ok, f"providerName='{proc}'")
 
     # Test E
     print("\n[E] Luogo=GLO, nessuna distanza -> market for con fallback geografico")
-    res = client.find_closest_match("polypropylene", location="GLO", has_transport=False)
+    res = await client.find_closest_match("polypropylene", location="GLO", has_transport=False)
     proc = res.get("providerName", "") if res else ""
     ok = "market for" in proc.lower()
     check("E: GLO + has_transport=False -> market for polypropylene", ok, f"providerName='{proc}'")
 
     # Test F
     print("\n[F] Acciaio senza distanza -> market for (se presente nel DB)")
-    res = client.find_closest_match("steel", location="Europe without Switzerland", has_transport=False)
+    res = await client.find_closest_match("steel", location="Europe without Switzerland", has_transport=False)
     if res:
         proc = res.get("providerName", "")
         ok_f = "market for" in proc.lower()
@@ -115,7 +115,7 @@ def test_csv_lca_rules():
 
     # Test G
     print("\n[G] Acciaio con distanza -> NO market for")
-    res = client.find_closest_match("steel", location="Europe without Switzerland", has_transport=True)
+    res = await client.find_closest_match("steel", location="Europe without Switzerland", has_transport=True)
     if res:
         proc = res.get("providerName", "")
         ok_g = "market for" not in proc.lower()
@@ -431,7 +431,7 @@ async def main():
     print("  TEST SUITE COMPLETO - LCA Logic vs System Prompt")
     print("=" * 70)
 
-    test_csv_lca_rules()
+    await test_csv_lca_rules()
     test_workflow_logic_isolated()
     test_bom_review_logic()
 

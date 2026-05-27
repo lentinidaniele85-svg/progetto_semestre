@@ -24,6 +24,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from agents.graph import build_graph
 from reports.generator import generate_html_report, generate_pdf_report
 from core.config import settings
+from data.provider_factory import flush_provider_cache
 
 _conn_err_types: list[type[Exception]] = [ConnectionError, OSError]
 try:
@@ -282,6 +283,9 @@ def handle_input(user_input: str) -> None:
     st.session_state.thread_id = str(uuid.uuid4())
     st.session_state.pop("cached_pdf_bytes", None)
     st.session_state.pop("cached_pdf_state_id", None)
+    # Flush stale coroutine objects from the LCA provider singleton cache
+    # so that lca_validator never receives a cached coroutine instead of a dict.
+    flush_provider_cache()
     _process_agent_run(user_input, is_feedback=False)
 
 
@@ -612,23 +616,20 @@ with right_col:
                 task_type = state.get("constraints", {}).get("task_type", "optimization")
                 display_bom = []
                 for item in bom:
-                    if task_type == "modeling":
-                        mat_row = item.copy()
-                        mat_row["name"] = f"{item.get('name', '')} (Material)"
-                        display_bom.append(mat_row)
-                        
-                        proc = item.get("manufacturing_process")
-                        if proc:
-                            proc_row = item.copy()
-                            proc_row["name"] = f"{item.get('name', '')} (Manufacturing)"
-                            proc_row["material"] = proc
-                            proc_row["functional_role"] = "Processing"
-                            from core.config import PROCESS_IMPACTS
-                            proc_row["baseline_environmental_impact"] = PROCESS_IMPACTS.get(proc, 1.0)
-                            proc_row["baseline_cost"] = 0.0
-                            display_bom.append(proc_row)
-                    else:
-                        display_bom.append(item)
+                    mat_row = item.copy()
+                    mat_row["name"] = f"{item.get('name', '')} (Material)"
+                    display_bom.append(mat_row)
+                    
+                    proc = item.get("manufacturing_process")
+                    if proc:
+                        proc_row = item.copy()
+                        proc_row["name"] = f"{item.get('name', '')} (Manufacturing)"
+                        proc_row["material"] = proc
+                        proc_row["functional_role"] = "Processing"
+                        from core.config import PROCESS_IMPACTS
+                        proc_row["baseline_environmental_impact"] = PROCESS_IMPACTS.get(proc, 1.0)
+                        proc_row["baseline_cost"] = 0.0
+                        display_bom.append(proc_row)
                 
                 transport_comp = next((c for c in state.get("lca_results", []) if c.get("component_name") == "Transport"), None)
                 if transport_comp:

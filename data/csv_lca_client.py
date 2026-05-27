@@ -790,9 +790,23 @@ class CSVLcaClient(LCADataProvider):
             raise ValueError(f"Dataset is missing required columns: {missing}")
 
     # ------------------------------------------------------------------
-    # Public API
+    # Cache management
     # ------------------------------------------------------------------
 
+    def flush_match_cache(self) -> None:
+        """Evict ALL entries from _match_cache and _search_cache.
+
+        Call this at the start of every new agent session to guarantee
+        that no stale coroutine objects left by pre-fix executions can
+        be returned to callers.  The DataFrame (_df) is expensive to
+        reload and is intentionally kept intact.
+        """
+        self._match_cache.clear()
+        self._search_cache.clear()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     async def search_materials(
         self, query: str, location: str = "Global"
     ) -> List[dict]:
@@ -845,6 +859,14 @@ class CSVLcaClient(LCADataProvider):
         if not actual_label:
             return None
 
+        # Clean actual_label to remove acronyms in parentheses like "(rEPS)" or "(rPP)"
+        import re
+        removed_parentheses = " ".join(re.findall(r"\([^)]*\)", actual_label))
+        actual_label = re.sub(r"\s*\([^)]*\)", "", actual_label).strip()
+        
+        if any(term in removed_parentheses.lower() for term in ["recycled", "riciclato", "recycling", "riciclo", "secondary", "secondario"]):
+            actual_label = f"recycled {actual_label}"
+
         # ── STADIO 0: Semantic Normalization Pipeline ─────────────────────
         # Normalizza l'input PRIMA di qualsiasi ricerca:
         #   - Rimuove contenuti di contenitori (acqua, vino…)
@@ -875,7 +897,16 @@ class CSVLcaClient(LCADataProvider):
             f"_semantic_{task_type}_{has_transport}"
         )
         if cache_key in self._match_cache:
-            return self._match_cache[cache_key]
+            cached = self._match_cache[cache_key]
+            # Guard: evict stale coroutine objects left by pre-fix calls without await.
+            # A valid cached value is either None or a dict; a coroutine means the
+            # entry was stored before 'await' was added and must be recomputed.
+            import inspect as _inspect
+            if not _inspect.iscoroutine(cached):
+                return cached
+            # Coroutine found in cache — close it to avoid ResourceWarning and recompute.
+            cached.close()
+            del self._match_cache[cache_key]
 
         if self._df.empty:
             return None
@@ -910,7 +941,13 @@ class CSVLcaClient(LCADataProvider):
 
         result: Optional[dict] = None
 
-        # Pass 1: Virgin-First Logic (soglia alta 0.85)
+        user_wants_recycled_global = any(
+            term in actual_label.lower() for term in
+            ["recycled", "riciclato", "recycling", "riciclo", "secondary", "secondario"]
+        )
+        pass1_threshold = 0.80 if user_wants_recycled_global else 0.85
+
+        # Pass 1: Virgin-First Logic
         for i, geo in enumerate(geographies_to_try):
             if i == 0:
                 print(f"[DEBUG] Stage 0: Cerco '{label_lower}' in {geo}...")
@@ -919,7 +956,7 @@ class CSVLcaClient(LCADataProvider):
 
             is_fallback = (geo != canonical_loc) if canonical_loc else False
             row = self._search_best_match(
-                search_terms, label_lower, geo, task_type, 0.85, self._df,
+                search_terms, actual_label.lower().strip(), geo, task_type, pass1_threshold, self._df,
                 require_virgin=True, has_transport=has_transport,
                 geometry_hint=geometry_hint,
             )
@@ -932,7 +969,7 @@ class CSVLcaClient(LCADataProvider):
         for i, geo in enumerate(geographies_to_try):
             is_fallback = (geo != canonical_loc) if canonical_loc else False
             row = self._search_best_match(
-                search_terms, label_lower, geo, task_type, 0.70, self._df,
+                search_terms, actual_label.lower().strip(), geo, task_type, 0.70, self._df,
                 require_virgin=False, has_transport=has_transport,
                 geometry_hint=geometry_hint,
             )
@@ -1013,6 +1050,10 @@ class CSVLcaClient(LCADataProvider):
                 if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b", name_combined):
                     print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Waste Assoluto)")
                     continue
+            elif user_wants_recycled:
+                if not re.search(r"\bwaste\b|\bscrap\b|\bscarto\b|\brecycled\b|\bsecondary\b", name_combined):
+                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (L'utente vuole riciclato, ma il dataset e' vergine)")
+                    continue
             # Legno/Naturali non hanno limiti (nessun else break)
             
             valid_indices.append(idx)
@@ -1026,7 +1067,7 @@ class CSVLcaClient(LCADataProvider):
         # DIRETTIVA 1: Calcola l'intent UNA SOLA VOLTA per questa query (fuori dal loop)
         search_intent = classify_search_intent(original_label)
         if search_intent != "generic":
-            print(f"[INTENT] classify_search_intent('{original_label}') → '{search_intent}'")
+            print(f"[INTENT] classify_search_intent('{original_label}') -> '{search_intent}'")
 
         # STADIO 2: Best-Match Logic
         # Troviamo il candidato con la massima similarità usando difflib su entrambe le colonne
@@ -1089,6 +1130,10 @@ class CSVLcaClient(LCADataProvider):
                 score -= 0.2
             if "sawnwood" in name_combined:
                 score += 0.1
+                
+            # Bonus Recycled: se richiesto esplicitamente
+            if user_wants_recycled and any(term in name_combined for term in ["recycled", "riciclato", "secondary", "scrap", "waste"]):
+                score += 0.3
                 
             # Penalità di Fedeltà: Scarta la ghisa (iron/cast iron) se l'utente ha chiesto acciaio (steel)
             if "steel" in search_terms and "iron" not in search_terms and "ghisa" not in search_terms:

@@ -435,9 +435,11 @@ ASSUMPTION-FIRST RULES (mandatory):
   is completely unintelligible (e.g. a single word with no context at all).
 - CRITICAL: If 'mass' or 'geography' are already provided in Constraints, DO NOT infer them and DO NOT create an assumption for them. Use the provided constraints explicitly!
 - CRITICAL: If mass is missing in Constraints → DO NOT INFER IT. You MUST leave total_mass_kg as null so the system can ask the user.
-- If material is missing → choose the most plausible one by technical exclusion (Step 3)
-  and record the assumption.
-- If geography is missing in Constraints → default to RER (Europe) or GLO and record the assumption.
+- CRITICAL: LITERAL EXTRACTION ONLY for geography and environment. Extract ONLY if explicitly mentioned.
+- CRITICAL: NO LANGUAGE BIAS. Do NOT infer geography or supplier_country from the language spoken by the user. If the country is not explicitly named, it MUST be left as null.
+- CRITICAL: NO DOMAIN INFERENCE. Do NOT guess usage_environment from the material.
+- If material is missing → choose the most plausible one by technical exclusion (Step 3) and record the assumption.
+- If geography is missing in Constraints → DO NOT INFER IT. You MUST leave geography as null so the Gap Analysis can handle it!
 - HARD LOCK GEOGRAPHY: If the user specifies a geography/nation (e.g., 'in Perù') or if it's in Constraints, it is a PRIMARY CONSTRAINT. You MUST extract it, translate it to English, and NEVER declare it 'not specified'.
 - MATERIAL SPECIFICITY: Output the basic industrial material name (e.g., 'steel', 'aluminum', 'polypropylene'). DO NOT add adjectives like 'virgin', 'natural', or 'primary'. Our database logic will automatically filter out waste/scrap datasets. NEVER use 'waste' or 'recycled' unless explicitly requested by the user.
 - You MUST translate BOTH the extracted material name and the geography into English.
@@ -503,11 +505,11 @@ ALWAYS ensure:
 
         # Mappiamo analiticamente cosa manca
         missing_fields = []
-        if mass is None and not is_material_only:
+        if result.total_mass_kg is None or result.total_mass_kg == 0:
             missing_fields.append("massa")
-        if not geography or geography.lower() in ["not specified", "unknown geography", ""]:
+        if not result.geography or result.geography.lower() in ["not specified", "unknown geography", ""]:
             missing_fields.append("luogo (geografia)")
-        if dist_km is None and not is_material_only:
+        if result.distance_km is None:
             missing_fields.append("distanza di trasporto")
 
         # Se ci sono dati mancanti, attiviamo la logica condizionale sui tentativi
@@ -542,19 +544,19 @@ ALWAYS ensure:
                 thought_log.append("Gap Analysis (Tentativo 2): Dati ancora assenti. Applicazione gerarchia di default.")
                 
                 if "massa" in missing_fields:
-                    mass = 1.0
-                    result.total_mass_kg = 1.0  # Aggiorniamo la distinta base effettiva
-                    assumptions.append("Massa non specificata: assunto valore di default di 1.0 kg.")
+                    mass = 5.0
+                    result.total_mass_kg = 5.0  # Aggiorniamo la distinta base effettiva
+                    assumptions.append("Massa non specificata: assunto valore di default industriale di 5.0 kg.")
                     
                 if "luogo (geografia)" in missing_fields:
-                    geography = "RER"
-                    result.geography = "RER"
-                    assumptions.append("Geografia non specificata: assunto mercato europeo (RER).")
+                    geography = "Europe (RER)"
+                    result.geography = "Europe (RER)"
+                    assumptions.append("Geografia non specificata: assunto mercato europeo di default (RER).")
                     
                 if "distanza di trasporto" in missing_fields:
                     dist_km = None
-                    result.distance_km = None  # has_transport diventa False -> forzerà l'uso di 'market for'
-                    assumptions.append("Distanza non specificata: il sistema utilizzerà i dataset 'market for'.")
+                    result.distance_km = None  # has_transport diventa False → forzerà l'uso di 'market for'
+                    assumptions.append("Distanza non specificata: il sistema utilizzerà i dataset 'market for' (trasporto già integrato, 0 tkm aggiuntivi).")
 
         # Se siamo qui (o perché i dati c'erano, o perché l'utente ha risposto al tentativo 0, 
         # o perché abbiamo applicato i default al tentativo 1), il workflow può procedere.

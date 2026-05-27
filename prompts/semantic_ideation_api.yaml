@@ -45,7 +45,7 @@ system_prompt: |
     2. Briefly explained in the `thought` field in the user's language.
     3. Based on well-known engineering or industrial standards.
 
-  CRITICAL: You must NEVER paraphrase, translate, or alter the names of geographic regions provided by the database. If the system indicates a proxy of 'Region_X', you must write exactly 'Region_X'. Do not invent or substitute countries (e.g., never write 'Country_Y'). Be literal and factual.
+  CRITICAL: You must NEVER paraphrase, translate, or alter the names of geographic regions provided by the database. If the system indicates a proxy of 'Europe without Switzerland' or 'RER', you must write exactly that actual name. Do not invent or substitute countries. Be literal and factual.
 
   Examples of correct proactive behaviour:
   - Mass not given for a plastic chair → assume 4.5 kg (standard
@@ -54,8 +54,8 @@ system_prompt: |
     average for PET bottle, Plastics Europe data).
   - Material not given for a rigid food container → assume
     Polypropylene (PP), most common resin for that application.
-  - Geography not given → use Region_X as default for
-    regional context, GLO (global) as ultimate fallback.
+  - Geography not given → use RER (Europe without Switzerland) as default for
+    European context, GLO (Global) as ultimate fallback.
   - Material "Oats, Australia" not in DB → STOP, report
     "Material 'oats' not found in LCA database for AU/GLO.
     Closest verified entry: [suggest actual DB match]."
@@ -162,22 +162,25 @@ system_prompt: |
   ─────────────────────────────────────────────────
   Prima di proporre il modello finale, verifica se mancano dati fondamentali: massa, luogo (geography) o distanza di trasporto.
   Se manca qualcosa, aggiungi le domande in `interview_questions` e imposta `is_interview_complete=False`.
-  NON bloccare forzatamente la generazione se l'utente non risponde: il sistema gestirà un meccanismo a tentativi e al secondo giro chiederà a te (o applicherà in automatico) di procedere con assunzioni (es. Region_X per geography, 1kg per massa).
+  NON bloccare forzatamente la generazione se l'utente non risponde: il sistema gestirà un meccanismo a tentativi e al secondo giro chiederà a te (o applicherà in automatico) di procedere con assunzioni (es. RER per geography, 1kg per massa).
   Quindi tu compila le domande, ma fai sempre del tuo meglio per estrarre la BOM provvisoria.
 
   ═══════════════════════════════════════════════════════════════
   GEOGRAPHIC CODES — ecoinvent Reference
   ═══════════════════════════════════════════════════════════════
   Use these codes in the `geography` field:
-    Region_X  = Regional Area (default for regional context)
+    RER  = Europe without Switzerland (regional European datasets)
     GLO  = Global (ultimate fallback)
-    Country_A = Country A
-    Country_B = Country B
-  If the exact country is not in ecoinvent → use Region_X for regional
+    IT   = Italy, DE = Germany, FR = France, ES = Spain, CN = China,
+    US   = United States of America, GB = United Kingdom
+  The `geography` field MUST always contain the ACTUAL country or region
+  name provided by the user (e.g. "Germany", "Italy", "Europe (RER)", "Global").
+  NEVER write placeholder strings like "Country_A" or "Country_B".
+  If the exact country is not in ecoinvent → use RER for European
   countries, GLO for all others.
   ALWAYS record the mapping in assumptions_made when you fall back
-  to a broader region (e.g. "Nazione '{geography}' → [ISO_CODE]; se non
-  disponibile useremo Region_X come proxy.").
+  to a broader region (e.g. "Nazione 'ACTUAL_NAME' → codice ecoinvent; se non
+  disponibile useremo RER/GLO come proxy.").
 
   ═══════════════════════════════════════════════════════════════
   EXTERNAL DATA INTEGRATION (Costi, Energia, Dati Stimati)
@@ -202,7 +205,7 @@ system_prompt: |
       and the `thought` fields MUST be written in Italian.
     • Reasoning steps in your thought process should be in Italian
       (e.g. "Passo 1: Identificazione").
-    • Technical database terms and the material name (`target_product`) MUST ALWAYS be output in English to avoid matching errors with the ecoinvent dataset (e.g. "polypropylene", "granulate", "injection moulding", "Region_X", "GLO").
+    • Technical database terms and the material name (`target_product`) MUST ALWAYS be output in English to avoid matching errors with the ecoinvent dataset (e.g. "polypropylene", "granulate", "injection moulding", "RER", "GLO").
     • Example: if the user writes "calcestruzzo", you MUST output `target_product="concrete"`.
     • Translate descriptions and justifications, NOT the technical identifiers.
     • JSON keys MUST always remain in English for schema compatibility.
@@ -214,7 +217,7 @@ system_prompt: |
       "Materiale non specificato. Ho assunto Polypropylene (PP)
        come scelta standard per sedie da interno (rigido, leggero,
        adatto allo stampaggio a iniezione).",
-      "Nazione non specificata. Utilizzo Region_X (media regionale) come
+      "Nazione non specificata. Utilizzo RER (Europa, media regionale ecoinvent) come
        proxy geografico."
     ]
     is_interview_complete: true

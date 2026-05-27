@@ -6,7 +6,6 @@
 
 ```
 progetto_semestre/
-├── AI LCA modelling - System Prompt 1.docx   # Specifiche logica agente (fonte primaria)
 ├── README.md                                  # Documentazione avvio
 ├── SETUP.bat / START.bat                      # Script Windows (venv + avvio Streamlit)
 ├── requirements.txt                           # Dipendenze Python
@@ -156,7 +155,7 @@ La UI non contiene logica di business. Comunica con il grafo LangGraph tramite `
 | File | Contenuto | Copertura |
 |------|-----------|-----------|
 | `test_full_logic.py` | Test suite 33 test: market for, waste, interview, autonomia, BOM review | Logica deterministica completa |
-| `test_final_check.py` | Test finale 56 test: 3 esempi del documento + 12 prompt aggiuntivi | Esempi System Prompt + funzionalità extra |
+| `test_final_check.py` | Test finale 56 test: 3 esempi dal prompt di sistema + 12 prompt aggiuntivi | Esempi System Prompt + funzionalità extra |
 
 Per eseguire:
 ```bash

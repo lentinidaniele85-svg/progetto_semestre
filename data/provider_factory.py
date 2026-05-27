@@ -33,3 +33,19 @@ def get_lca_provider() -> LCADataProvider:
             return _provider_cache[source]
 
         raise ValueError(f"Unknown LCA data source: {source!r}")
+
+
+def flush_provider_cache() -> None:
+    """Evict stale match/search cache entries from the LCA provider singleton.
+
+    Call this at the start of every new agent session (e.g. on chat reset in
+    the UI) to ensure that coroutine objects written by any pre-fix code path
+    cannot be returned to callers in subsequent runs.
+
+    The provider instance itself is NOT recreated — the (large) DataFrame stays
+    in memory.  Only the lightweight result caches are cleared.
+    """
+    for provider in _provider_cache.values():
+        if hasattr(provider, "flush_match_cache"):
+            provider.flush_match_cache()
+

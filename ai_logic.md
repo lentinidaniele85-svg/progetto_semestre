@@ -19,7 +19,7 @@ Il sistema divide le responsabilità tra due motori complementari:
 
 ## 2. Il Flusso Logico a 7 Passi (System Prompt)
 
-L'agente segue la pipeline definita nel file `AI LCA modelling - System Prompt 1.docx`:
+L'agente segue la pipeline definita nel prompt di sistema:
 
 | Passo | Nome | Descrizione |
 |-------|------|-------------|

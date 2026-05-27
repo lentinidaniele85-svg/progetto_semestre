@@ -101,6 +101,10 @@ def constraint_extractor(state: AgentState) -> dict:
                 "(Dimensions, Mechanical Load, Usage Environment, Target Lifespan) "
                 "from the product description, along with budget, aesthetics, "
                 "structural requirements, and weight limit.\n\n"
+                "CRITICAL EXTRACTION RULES:\n"
+                "1. LITERAL EXTRACTION ONLY: Extract values ONLY if explicitly mentioned in the user's text. NEVER make assumptions, deductions, or logical inferences. If a field is not present word-for-word or clearly specified, it MUST be left as null.\n"
+                "2. NO LANGUAGE BIAS: The language of the prompt (Italian, English, French, etc.) DOES NOT imply the production location. NEVER infer 'geography' or 'supplier_country' based on the language. If the country/geography is not explicitly named (e.g., 'in Italia', 'produced in Germany'), the field MUST remain null.\n"
+                "3. NO DOMAIN INFERENCE: Do not guess the 'usage_environment' based on the material. Even if construction PVC pipes are typically used outdoors, if the user does not explicitly write 'outdoor', 'esterno' or similar, the field MUST remain null.\n\n"
                 "GEOGRAPHY RULES:\n"
                 "- 'geography': the PRODUCTION/ASSEMBLY location (where the product is made).\n"
                 "- 'supplier_country': the ORIGIN of the main raw material (where it comes from).\n"
@@ -201,7 +205,7 @@ async def lca_validator(state: AgentState) -> dict:
             task_type = (state.get("constraints") or {}).get("task_type", "optimization")
             
             # --- Ricerca Dinamica Processo ---
-            proc_match = provider.find_closest_match(label=process_name, location=geography, has_transport=False)
+            proc_match = await provider.find_closest_match(label=process_name, location=geography, has_transport=False)
             if proc_match and proc_match.get("climatechangeimpact") is not None:
                 process_impact = proc_match["climatechangeimpact"]
                 thought_log.append(f"[LCA Validation] Processo '{process_name}' associato al record: {proc_match.get('processname', '?')}")
@@ -321,8 +325,8 @@ async def lca_validator(state: AgentState) -> dict:
                     # l'alternativa non puo' essere confrontata con valori
                     # CO2 inventati. La saltiamo e passiamo alla successiva.
                     _skip_note = (
-                        f"Alternativa '{alt_name}' non trovata nel DB LCA (soglia 0.85) "
-                        f"per '{geography}'. Esclusa dal confronto MCDA."
+                        f"Alternativa '{alt_name}' non trovata nel DB LCA "
+                        f"per '{geography}' (o aree geografiche proxy). Esclusa dal confronto MCDA."
                     )
                     assumptions.append(_skip_note)
                     logger.warning(
@@ -331,7 +335,7 @@ async def lca_validator(state: AgentState) -> dict:
                     )
                     thought_log.append(
                         f"⚠ STRICT: alternativa '{alt_name}' @ '{geography}' "
-                        f"-> nessun match >= 0.85. Saltata."
+                        f"-> nessun match sufficiente. Saltata."
                     )
                     continue  # Passa all'alternativa successiva senza usare dati casuali
                 else:
@@ -444,7 +448,7 @@ async def lca_validator(state: AgentState) -> dict:
                 c_tkm = (mass_kg / 1000.0) * eff_dist
                 total_tkm += c_tkm
                 
-                transp_match = provider.find_closest_match(label=comp_mode, location=geography, has_transport=True)
+                transp_match = await provider.find_closest_match(label=comp_mode, location=geography, has_transport=True)
                 if transp_match and transp_match.get("climatechangeimpact") is not None:
                     c_factor = transp_match["climatechangeimpact"]
                     thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' associato al record: {transp_match.get('processname', '?')}")

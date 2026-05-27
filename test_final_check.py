@@ -1,5 +1,5 @@
 """
-TEST FINALE COMPLETO - Verifica vs System Prompt (AI LCA modelling - System Prompt 1.docx)
+TEST FINALE COMPLETO - Verifica vs System Prompt (Training.docx)
 + prompt aggiuntivi di verifica funzionalita'
 ============================================================================================
 
@@ -144,11 +144,11 @@ def _missing(out): return out.get("missing_fields", [])
 
 
 # ============================================================================
-# SEZIONE 1: ESEMPI DAL DOCUMENTO (AI LCA modelling - System Prompt 1.docx)
+# SEZIONE 1: ESEMPI DAL DOCUMENTO (Training.docx)
 # ============================================================================
 
-def test_document_examples():
-    section_header("SEZIONE 1 — Esempi dal documento 'AI LCA modelling - System Prompt 1.docx'")
+async def test_document_examples():
+    section_header("SEZIONE 1 — Esempi dal documento 'Training.docx'")
     SEC = "S1"
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -177,7 +177,7 @@ def test_document_examples():
 
     # 1b. DB reale: market for polypropylene quando has_transport=False
     client = CSVLcaClient()
-    res = client.find_closest_match("polypropylene", location="RER", has_transport=False)
+    res = await client.find_closest_match("polypropylene", location="RER", has_transport=False)
     proc = res.get("providerName", "") if res else ""
     check("E1-5: DB -> market for polypropylene (RER, has_transport=False)",
           "market for" in proc.lower(), f"providerName='{proc}'", SEC)
@@ -216,7 +216,7 @@ def test_document_examples():
           abs(tkm - 3.6) < 0.001, f"tkm={tkm:.4f}", SEC)
 
     # DB: con has_transport=True -> NON deve usare market for
-    res2 = client.find_closest_match("polypropylene", location="RER", has_transport=True)
+    res2 = await client.find_closest_match("polypropylene", location="RER", has_transport=True)
     proc2 = res2.get("providerName", "") if res2 else ""
     check("E2-6: DB -> NON usa market for (distanza presente, has_transport=True)",
           "market for" not in proc2.lower(), f"providerName='{proc2}'", SEC)
@@ -256,7 +256,7 @@ def test_document_examples():
 # SEZIONE 2: PROMPT AGGIUNTIVI — verifica funzionalita' estesa
 # ============================================================================
 
-def test_additional_prompts():
+async def test_additional_prompts():
     section_header("SEZIONE 2 — Prompt aggiuntivi (verifica funzionalita' extra)")
     SEC = "S2"
     client = CSVLcaClient()
@@ -274,7 +274,7 @@ def test_additional_prompts():
           _pending(out) == "", f"pending='{_pending(out)[:60]}'", SEC)
     check("P1-2: is_material_only -> distanza NON chiesta",
           "distanza" not in " ".join(_missing(out)).lower(), f"missing={_missing(out)}", SEC)
-    res = client.find_closest_match("polyethylene", location="Italy", has_transport=False)
+    res = await client.find_closest_match("polyethylene", location="Italy", has_transport=False)
     proc = res.get("providerName","") if res else "NESSUN MATCH"
     check("P1-3: DB -> market for polyethylene (has_transport=False)",
           "market for" in proc.lower() if res else True,
@@ -388,7 +388,7 @@ def test_additional_prompts():
     for mat in ["polypropylene", "polyethylene", "steel"]:
         for geo in ["RER", "Global", "Italy"]:
             for ht in [True, False, None]:
-                res = client.find_closest_match(mat, location=geo, has_transport=ht)
+                res = await client.find_closest_match(mat, location=geo, has_transport=ht)
                 combo_tested += 1
                 if res:
                     fn = (res.get("flowName","") or "").lower()
@@ -404,12 +404,12 @@ def test_additional_prompts():
     # P8: has_transport=False -> market for (PP e acciaio su DB reale)
     # ─────────────────────────────────────────────────────────────────────────
     print("\n[P8] DB reale: has_transport=False -> market for (PP e acciaio)")
-    res_pp = client.find_closest_match("polypropylene", location="RER", has_transport=False)
+    res_pp = await client.find_closest_match("polypropylene", location="RER", has_transport=False)
     proc_pp = res_pp.get("providerName","") if res_pp else ""
     check("P8-1: PP RER has_transport=False -> market for",
           "market for" in proc_pp.lower(), f"providerName='{proc_pp}'", SEC)
 
-    res_pp_glo = client.find_closest_match("polypropylene", location="GLO", has_transport=False)
+    res_pp_glo = await client.find_closest_match("polypropylene", location="GLO", has_transport=False)
     proc_pp_glo = res_pp_glo.get("providerName","") if res_pp_glo else ""
     check("P8-2: PP GLO has_transport=False -> market for",
           "market for" in proc_pp_glo.lower(), f"providerName='{proc_pp_glo}'", SEC)
@@ -418,12 +418,12 @@ def test_additional_prompts():
     # P9: has_transport=True -> NO market for (PP e acciaio su DB reale)
     # ─────────────────────────────────────────────────────────────────────────
     print("\n[P9] DB reale: has_transport=True -> NO market for")
-    res_pp_t = client.find_closest_match("polypropylene", location="RER", has_transport=True)
+    res_pp_t = await client.find_closest_match("polypropylene", location="RER", has_transport=True)
     proc_pp_t = res_pp_t.get("providerName","") if res_pp_t else ""
     check("P9-1: PP RER has_transport=True -> NO market for",
           "market for" not in proc_pp_t.lower(), f"providerName='{proc_pp_t}'", SEC)
 
-    res_st_t = client.find_closest_match("steel", location="Europe without Switzerland", has_transport=True)
+    res_st_t = await client.find_closest_match("steel", location="Europe without Switzerland", has_transport=True)
     proc_st_t = res_st_t.get("providerName","") if res_st_t else ""
     check("P9-2: steel EU has_transport=True -> NO market for",
           "market for" not in proc_st_t.lower() if res_st_t else True,
@@ -489,8 +489,8 @@ async def main():
     print("  TEST FINALE — Verifica logica LCA vs System Prompt + prompt extra")
     print("=" * 72)
 
-    test_document_examples()
-    test_additional_prompts()
+    await test_document_examples()
+    await test_additional_prompts()
 
     total = len(RESULTS)
     passed = sum(1 for _, ok, _ in RESULTS if ok)
