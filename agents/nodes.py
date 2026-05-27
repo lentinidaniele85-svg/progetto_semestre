@@ -193,7 +193,12 @@ async def lca_validator(state: AgentState) -> dict:
             
             # Impatto materiale originale
             thought_log.append(f"Termine tradotto: {original_material}")
-            orig_match = provider.find_closest_match(target_product=original_material, target_geography=geography, task_type=task_type)
+            orig_match = await provider.find_closest_match(
+                target_product=original_material,
+                target_geography=geography,
+                task_type=task_type,
+                thought_log=thought_log,
+            )
 
             if not orig_match or orig_match.get("environmental_impact") is None:
                 # ── STRICT MODE — MATERIALE ORIGINALE NON TROVATO ───────────
@@ -285,7 +290,12 @@ async def lca_validator(state: AgentState) -> dict:
             for alt in component_alts.get("alternatives", []):
                 alt_name = alt["name"]
                 thought_log.append(f"Termine tradotto: {alt_name}")
-                alt_match = provider.find_closest_match(target_product=alt_name, target_geography=geography, task_type=task_type)
+                alt_match = await provider.find_closest_match(
+                    target_product=alt_name,
+                    target_geography=geography,
+                    task_type=task_type,
+                    thought_log=thought_log,
+                )
 
                 if not alt_match or alt_match.get("environmental_impact") is None:
                     # ── STRICT MODE — ALTERNATIVA NON TROVATA ──────────────

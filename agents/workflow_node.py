@@ -577,11 +577,12 @@ ALWAYS ensure:
             comp_dist = comp.get("distance_km")
             eff_dist = comp_dist if comp_dist is not None else (dist_km or 0.0)
             has_transport = eff_dist > 0
-            best_match = provider.find_closest_match(
-                mat, 
-                location=geography, 
+            best_match = await provider.find_closest_match(
+                mat,
+                location=geography,
                 task_type=state.get("constraints", {}).get("task_type", "optimization"),
-                has_transport=has_transport
+                has_transport=has_transport,
+                thought_log=thought_log,
             )
 
             if not best_match or best_match.get("environmental_impact") is None:

@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from unittest.mock import patch, AsyncMock
 
 import pytest
 
@@ -106,12 +107,20 @@ def mock_client() -> CSVLcaClient:
     fake_df["_flowname_lower"] = fake_df["outputname"].str.lower()
     client._df = fake_df
     client._search_cache = {}
+    client._match_cache = {}
     return client
+
+
+def _run_find(client: CSVLcaClient, *args, **kwargs):
+    """Helper: esegue find_closest_match (async) in modo sincrono per i test."""
+    return asyncio.run(client.find_closest_match(*args, **kwargs))
 
 
 def test_find_closest_match_market_is_market_true(mock_client: CSVLcaClient) -> None:
     """Un processname contenente 'market' deve restituire is_market=True."""
-    result = mock_client.find_closest_match("polypropylene, granulate")
+    with patch("data.csv_lca_client.generate_search_queries",
+               new_callable=lambda: lambda: AsyncMock(side_effect=lambda m: [m])):
+        result = _run_find(mock_client, "polypropylene, granulate")
     assert result is not None, "find_closest_match non deve restituire None"
     assert "is_market" in result, "Il campo is_market deve essere presente nel dict"
     assert result["is_market"] is True, (
@@ -121,7 +130,9 @@ def test_find_closest_match_market_is_market_true(mock_client: CSVLcaClient) -> 
 
 def test_find_closest_match_production_is_market_false(mock_client: CSVLcaClient) -> None:
     """Un processname senza 'market' deve restituire is_market=False."""
-    result = mock_client.find_closest_match("polypropylene production granulate")
+    with patch("data.csv_lca_client.generate_search_queries",
+               new_callable=lambda: lambda: AsyncMock(side_effect=lambda m: [m])):
+        result = _run_find(mock_client, "polypropylene production granulate")
     assert result is not None, "find_closest_match non deve restituire None"
     assert "is_market" in result, "Il campo is_market deve essere presente nel dict"
     assert result["is_market"] is False, (
@@ -131,7 +142,9 @@ def test_find_closest_match_production_is_market_false(mock_client: CSVLcaClient
 
 def test_find_closest_match_returns_all_expected_keys(mock_client: CSVLcaClient) -> None:
     """find_closest_match deve restituire tutti i campi attesi."""
-    result = mock_client.find_closest_match("polypropylene, granulate")
+    with patch("data.csv_lca_client.generate_search_queries",
+               new_callable=lambda: lambda: AsyncMock(side_effect=lambda m: [m])):
+        result = _run_find(mock_client, "polypropylene, granulate")
     expected_keys = {"id", "providerName", "flowName", "location", "environmental_impact", "is_market"}
     assert expected_keys.issubset(result.keys()), (
         f"Campi mancanti: {expected_keys - result.keys()}"
@@ -140,7 +153,9 @@ def test_find_closest_match_returns_all_expected_keys(mock_client: CSVLcaClient)
 
 def test_find_closest_match_no_match_returns_none(client: CSVLcaClient) -> None:
     """Con un label totalmente inventato e soglia alta, deve restituire None."""
-    result = client.find_closest_match("xyzzy_material_that_does_not_exist_9999", threshold=0.9)
+    with patch("data.csv_lca_client.generate_search_queries",
+               new_callable=lambda: lambda: AsyncMock(side_effect=lambda m: [m])):
+        result = _run_find(client, "xyzzy_material_that_does_not_exist_9999", threshold=0.9)
     assert result is None, "Expected None per un label senza corrispondenza"
 
 

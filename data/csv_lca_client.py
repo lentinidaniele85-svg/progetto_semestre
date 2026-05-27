@@ -2,6 +2,7 @@ from pathlib import Path
 import difflib
 from typing import List, Optional, Tuple
 import pandas as pd
+from pydantic import BaseModel
 
 from data.lca_interface import LCADataProvider
 
@@ -516,6 +517,88 @@ def _expand_semantic_terms(label: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# LLM Dynamic Semantic Expander
+# ---------------------------------------------------------------------------
+# Sostituisce la logica statica _SEMANTIC_SYNONYMS con un LLM chiamato in
+# tempo reale. Il risultato viene cachato in sessione per evitare chiamate
+# API ripetute per lo stesso materiale (es. 5 componenti PVC = 1 call LLM).
+# ---------------------------------------------------------------------------
+
+# Cache di sessione: {material_lower -> lista di termini espansi}
+_llm_expansion_cache: dict[str, list[str]] = {}
+
+_LLM_EXPANDER_SYSTEM_PROMPT = (
+    "Sei un esperto chimico e analista LCA. Il tuo compito è tradurre nomi di materiali "
+    "comuni o acronimi nei termini tecnici esatti utilizzati nei database LCA internazionali "
+    "(come Ecoinvent). L'utente cercherà un materiale (es. 'PVC'). Tu devi restituire una "
+    "lista di 3-5 stringhe di ricerca iper-precise in INGLESE.\n"
+    "Regole:\n"
+    "1) Espandi sempre gli acronimi nel nome IUPAC "
+    "(es. PVC -> polyvinyl chloride, PET -> polyethylene terephthalate).\n"
+    "2) Includi l'acronimo stesso come fallback.\n"
+    "3) Se è una plastica, aggiungi varianti comuni nei DB come 'granulate' o "
+    "'suspension polymerised'.\n"
+    "Non scrivere spiegazioni, restituisci solo una lista JSON di stringhe "
+    "nel campo 'queries'."
+)
+
+
+class SearchQueryList(BaseModel):
+    """Schema Pydantic per l'output strutturato dell'LLM Semantic Expander."""
+    queries: list[str]
+
+
+async def generate_search_queries(material_name: str) -> list[str]:
+    """Usa l'LLM per espandere material_name in termini di ricerca Ecoinvent-precisi.
+
+    Invocato in modalità asincrona (ainvoke) per non bloccare l'event loop.
+    I risultati sono cachati in _llm_expansion_cache per la durata della sessione:
+    se lo stesso materiale compare su più componenti del BOM, l'LLM viene
+    interrogato una sola volta.
+
+    Fallback deterministico: se l'LLM va in timeout o restituisce un errore,
+    la funzione ricade su _expand_semantic_terms() (dizionario statico) in modo
+    trasparente, senza sollevare eccezioni verso i caller.
+
+    Args:
+        material_name: Nome del materiale normalizzato (es. "PVC", "polypropylene").
+
+    Returns:
+        Lista di stringhe di ricerca iper-precise per il DB LCA (es.
+        ["polyvinyl chloride", "pvc", "polyvinylchloride", "suspension polymerised pvc"]).
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    cache_key = material_name.strip().lower()
+    if cache_key in _llm_expansion_cache:
+        return _llm_expansion_cache[cache_key]
+
+    try:
+        from core.llm_factory import ModelFactory
+        from langchain_core.messages import SystemMessage as _SM, HumanMessage as _HM
+
+        llm = ModelFactory.get_model()
+        chain = llm.with_structured_output(SearchQueryList)
+        result: SearchQueryList = await chain.ainvoke([
+            _SM(content=_LLM_EXPANDER_SYSTEM_PROMPT),
+            _HM(content=material_name),
+        ])
+        expanded: list[str] = result.queries
+        if not expanded:
+            raise ValueError("LLM Expander ha restituito una lista vuota")
+    except Exception as exc:
+        _log.warning(
+            "[LLMExpander] Fallback statico per '%s' (LLM non disponibile): %s",
+            material_name, exc,
+        )
+        expanded = _expand_semantic_terms(material_name.lower())
+
+    _llm_expansion_cache[cache_key] = expanded
+    return expanded
+
+
+# ---------------------------------------------------------------------------
 # DIRETTIVA 1: Contextual Intent Classifier
 #
 # Determina l'intenzione della query in modo DETERMINISTICO (zero LLM).
@@ -738,7 +821,7 @@ class CSVLcaClient(LCADataProvider):
         self._search_cache[cache_key] = results
         return results
 
-    def find_closest_match(
+    async def find_closest_match(
         self,
         label: Optional[str] = None,
         location: Optional[str] = None,
@@ -746,7 +829,8 @@ class CSVLcaClient(LCADataProvider):
         target_product: Optional[str] = None,
         target_geography: Optional[str] = None,
         task_type: str = "optimization",
-        has_transport: Optional[bool] = None
+        has_transport: Optional[bool] = None,
+        thought_log: Optional[list] = None,
     ) -> Optional[dict]:
         """Find the closest matching material using a 4-stage search logic.
 
@@ -797,8 +881,17 @@ class CSVLcaClient(LCADataProvider):
             return None
 
         # ── STADIO 1: Espansione Semantica ───────────────────────────────
-        # Opera sul materiale normalizzato (es. "PVC" → ["PVC", "polyvinyl chloride", …])
-        search_terms = _expand_semantic_terms(label_lower)
+        # ── STADIO 1 AGGIORNATO: LLM Dynamic Expansion (async, con cache) ────
+        # L'LLM viene sempre interrogato per garantire la massima precisione
+        # semantica. In caso di errore/timeout, ricade su _expand_semantic_terms.
+        search_terms = await generate_search_queries(normalized_label)
+        _expander_msg = (
+            f"[LLM Semantic Expander] Materiale '{normalized_label}' "
+            f"tradotto nei termini di ricerca: {search_terms}"
+        )
+        print(_expander_msg)
+        if thought_log is not None:
+            thought_log.append(_expander_msg)
 
         # ── STADIO 3: Fallback Geografico (Outer Loop) ───────────────────
         target_loc = exact_loc if exact_loc else (canonical_loc if canonical_loc else "Global")
@@ -1082,10 +1175,18 @@ class CSVLcaClient(LCADataProvider):
                 best_row = row
 
         if best_score >= threshold and best_row is not None:
-            print(f"[DEBUG] Trovato {best_row['outputname']} in {loc} -> APPROVATO (Score: {best_score:.3f} >= {threshold})")
+            print(
+                f"[MATCH ✓] '{best_row['outputname']}' | {loc} "
+                f"| Score: {best_score:.3f} >= {threshold} "
+                f"| ID: {best_row['id']}"
+            )
             return best_row
         elif best_row is not None:
-            print(f"[DEBUG] Trovato {best_row['outputname']} in {loc} -> Scartato (Score: {best_score:.3f} < {threshold})")
+            print(
+                f"[MISS  ✗] '{best_row['outputname']}' | {loc} "
+                f"| Score: {best_score:.3f} < {threshold} "
+                f"| ID: {best_row['id']}"
+            )
             
         return None
 
