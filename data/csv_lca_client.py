@@ -528,19 +528,29 @@ def _expand_semantic_terms(label: str) -> List[str]:
 _llm_expansion_cache: dict[str, list[str]] = {}
 
 _LLM_EXPANDER_SYSTEM_PROMPT = (
-    "Sei un esperto chimico e analista LCA. Il tuo compito è tradurre nomi di materiali "
-    "comuni o acronimi nei termini tecnici esatti utilizzati nei database LCA internazionali "
-    "(come Ecoinvent). L'utente cercherà un materiale (es. 'PVC'). Tu devi restituire una "
-    "lista di 3-5 stringhe di ricerca iper-precise in INGLESE.\n"
-    "Regole:\n"
+    "Sei un esperto chimico e analista LCA con conoscenza approfondita del database ecoinvent. "
+    "Il tuo compito è tradurre nomi di MATERIALI o MEZZI DI TRASPORTO nei termini tecnici esatti "
+    "utilizzati nel database ecoinvent. L'utente ti invierà un termine (es. 'PVC', 'nave', 'lorry'). "
+    "Tu devi restituire una lista di 3-5 stringhe di ricerca iper-precise in INGLESE.\n"
+    "Regole per MATERIALI:\n"
     "1) Espandi sempre gli acronimi nel nome IUPAC "
     "(es. PVC -> polyvinyl chloride, PET -> polyethylene terephthalate).\n"
     "2) Includi l'acronimo stesso come fallback.\n"
-    "3) Se è una plastica, aggiungi varianti comuni nei DB come 'granulate' o "
-    "'suspension polymerised'.\n"
+    "3) Se è una plastica, aggiungi varianti comuni nei DB come 'granulate' o 'suspension polymerised'.\n"
+    "4) Usa rigorosamente la tassonomia e le convenzioni di spelling dell'Inglese Britannico (UK) per i materiali industriali. Ad esempio, traduci sempre 'fiber' in 'fibre', 'molding' in 'moulding', ecc., per garantire che l'algoritmo fuzzy superi la soglia di sbarramento dello 0.85.\n"
+    "Regole per MEZZI DI TRASPORTO:\n"
+    "Se il termine è un mezzo di trasporto (ship, lorry, truck, aircraft, nave, camion, aereo, ferry, ecc.), "
+    "NON usare le regole per i materiali. Invece, traduci il mezzo nelle sigle di trasporto merci ecoinvent:\n"
+    "- 'ship' / 'nave' / 'sea' / 'ferry' -> "
+    "['transport, freight, sea, transoceanic ship', 'transport, freight, sea', 'transoceanic ship', 'freight, sea, container ship']\n"
+    "- 'lorry' / 'truck' / 'camion' / 'road' -> "
+    "['transport, freight, lorry', 'articulated lorry', 'transport, freight, road', 'lorry >32 metric ton']\n"
+    "- 'aircraft' / 'aereo' / 'air' / 'airplane' -> "
+    "['transport, freight, air', 'freight, air, express freight', 'air freight', 'freight air transport']\n"
     "Non scrivere spiegazioni, restituisci solo una lista JSON di stringhe "
     "nel campo 'queries'."
 )
+
 
 
 class SearchQueryList(BaseModel):
@@ -845,6 +855,7 @@ class CSVLcaClient(LCADataProvider):
         task_type: str = "optimization",
         has_transport: Optional[bool] = None,
         thought_log: Optional[list] = None,
+        is_recycled: bool = False,
     ) -> Optional[dict]:
         """Find the closest matching material using a 4-stage search logic.
 
@@ -852,6 +863,11 @@ class CSVLcaClient(LCADataProvider):
         STADIO 1: Espansione Semantica (The "Think" Phase)
         STADIO 2: Ricerca Fuzzy con Filtro Dinamico (The Best-Match Logic)
         STADIO 3: Fallback Intelligente (Geographic Expansion)
+
+        Args:
+            is_recycled: If True (from Pydantic BOMComponent), disables virgin filters
+                         and applies +0.3 bonus to secondary/scrap/recycled records.
+                         This is the ONLY source of truth for recycled detection.
         """
         actual_label = target_product if target_product is not None else label
         actual_location = target_geography if target_geography is not None else location
@@ -861,11 +877,9 @@ class CSVLcaClient(LCADataProvider):
 
         # Clean actual_label to remove acronyms in parentheses like "(rEPS)" or "(rPP)"
         import re
-        removed_parentheses = " ".join(re.findall(r"\([^)]*\)", actual_label))
         actual_label = re.sub(r"\s*\([^)]*\)", "", actual_label).strip()
-        
-        if any(term in removed_parentheses.lower() for term in ["recycled", "riciclato", "recycling", "riciclo", "secondary", "secondario"]):
-            actual_label = f"recycled {actual_label}"
+        # NOTE: is_recycled parameter is the sole source of truth for recycled detection.
+        # We do NOT infer recycled intent from label text-scan — that caused false positives.
 
         # ── STADIO 0: Semantic Normalization Pipeline ─────────────────────
         # Normalizza l'input PRIMA di qualsiasi ricerca:
@@ -894,7 +908,7 @@ class CSVLcaClient(LCADataProvider):
         # Cache key usa l'etichetta originale per evitare collisioni tra input diversi
         cache_key = (
             f"{actual_label.lower().strip()}__{exact_loc}__{canonical_loc}"
-            f"_semantic_{task_type}_{has_transport}"
+            f"_semantic_{task_type}_{has_transport}_{is_recycled}"
         )
         if cache_key in self._match_cache:
             cached = self._match_cache[cache_key]
@@ -941,13 +955,11 @@ class CSVLcaClient(LCADataProvider):
 
         result: Optional[dict] = None
 
-        user_wants_recycled_global = any(
-            term in actual_label.lower() for term in
-            ["recycled", "riciclato", "recycling", "riciclo", "secondary", "secondario"]
-        )
-        pass1_threshold = 0.80 if user_wants_recycled_global else 0.85
+        # is_recycled viene propagato dal campo Pydantic — è l'unica fonte di verità.
+        # NON si usa text-scan sul label per rilevare il riciclato.
+        pass1_threshold = 0.80 if is_recycled else 0.85
 
-        # Pass 1: Virgin-First Logic
+        # Pass 1: Virgin-First Logic (or Recycled-First Logic quando is_recycled=True)
         for i, geo in enumerate(geographies_to_try):
             if i == 0:
                 print(f"[DEBUG] Stage 0: Cerco '{label_lower}' in {geo}...")
@@ -959,6 +971,22 @@ class CSVLcaClient(LCADataProvider):
                 search_terms, actual_label.lower().strip(), geo, task_type, pass1_threshold, self._df,
                 require_virgin=True, has_transport=has_transport,
                 geometry_hint=geometry_hint,
+                is_recycled=is_recycled,
+            )
+            if row is not None:
+                result = self._build_result(row, location_fallback_used=is_fallback, requested_location=exact_loc, pass_number=1)
+                self._match_cache[cache_key] = result
+                return result
+
+        # Pass 1.5: Fallback automatico con soglia a 0.75
+        for i, geo in enumerate(geographies_to_try):
+            print(f"[DEBUG] Stage 1.5: Fallback soglia 0.75 per '{label_lower}' in {geo}...")
+            is_fallback = (geo != canonical_loc) if canonical_loc else False
+            row = self._search_best_match(
+                search_terms, actual_label.lower().strip(), geo, task_type, 0.75, self._df,
+                require_virgin=True, has_transport=has_transport,
+                geometry_hint=geometry_hint,
+                is_recycled=is_recycled,
             )
             if row is not None:
                 result = self._build_result(row, location_fallback_used=is_fallback, requested_location=exact_loc, pass_number=1)
@@ -972,6 +1000,7 @@ class CSVLcaClient(LCADataProvider):
                 search_terms, actual_label.lower().strip(), geo, task_type, 0.70, self._df,
                 require_virgin=False, has_transport=has_transport,
                 geometry_hint=geometry_hint,
+                is_recycled=is_recycled,
             )
             if row is not None:
                 result = self._build_result(row, location_fallback_used=is_fallback, requested_location=exact_loc, pass_number=2)
@@ -1003,9 +1032,16 @@ class CSVLcaClient(LCADataProvider):
         self, search_terms: List[str], original_label: str, loc: str,
         task_type: str, threshold: float, base_df: pd.DataFrame,
         require_virgin: bool = False, has_transport: Optional[bool] = None,
-        geometry_hint: Optional[str] = None
+        geometry_hint: Optional[str] = None,
+        is_recycled: bool = False,
     ) -> Optional[pd.Series]:
-        """Return the best-matching DataFrame row evaluating all semantic terms with dynamic filters."""
+        """Return the best-matching DataFrame row evaluating all semantic terms with dynamic filters.
+
+        Args:
+            is_recycled: If True, disables virgin-first filter and applies recycled-content
+                         score bonuses. This is the SOLE source of truth — no text-scan.
+        """
+        print(f"[DEBUG _search_best_match] Analisi query: '{original_label}' in loc: '{loc}', termini: {search_terms}")
         df_search = self._get_location_subset(loc, base_df)
         if df_search.empty:
             return None
@@ -1036,23 +1072,22 @@ class CSVLcaClient(LCADataProvider):
             
             import re
             
-            # task_type="optimization" + richiesta esplicita riciclato → permetti waste/recycled
-            user_wants_recycled = any(
-                term in original_label for term in
-                ["recycled", "riciclato", "recycling", "riciclo", "secondary", "secondario"]
-            )
-            
-            if not user_wants_recycled and require_virgin:
+            # ── TICKET 3: Boolean Gating Stretto (Nessuna inferenza testuale) ──────────
+            # is_recycled proviene dal campo Pydantic BOMComponent — unica fonte di verità.
+            # Nessun text-scan su original_label: elimina falsi positivi.
+            if not is_recycled and require_virgin:
                 if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b|\brecycled\b|\bsecondary\b", name_combined):
                     print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Vergine Semantico)")
                     continue
-            elif not user_wants_recycled:
+            elif not is_recycled:
+                # is_recycled=False: scarta waste/scrap assoluto anche in pass2
                 if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b", name_combined):
                     print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Waste Assoluto)")
                     continue
-            elif user_wants_recycled:
+            else:
+                # is_recycled=True: disattiva require_virgin, cerca solo materiali secondari/scrap
                 if not re.search(r"\bwaste\b|\bscrap\b|\bscarto\b|\brecycled\b|\bsecondary\b", name_combined):
-                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (L'utente vuole riciclato, ma il dataset e' vergine)")
+                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (is_recycled=True ma record è vergine)")
                     continue
             # Legno/Naturali non hanno limiti (nessun else break)
             
@@ -1131,9 +1166,14 @@ class CSVLcaClient(LCADataProvider):
             if "sawnwood" in name_combined:
                 score += 0.1
                 
-            # Bonus Recycled: se richiesto esplicitamente
-            if user_wants_recycled and any(term in name_combined for term in ["recycled", "riciclato", "secondary", "scrap", "waste"]):
+            # Bonus Recycled: applicato SOLO se is_recycled=True (campo Pydantic strutturato)
+            # NON basato su text-scan — elimina falsi positivi.
+            if is_recycled and any(term in name_combined for term in ["recycled", "riciclato", "secondary", "scrap", "waste"]):
                 score += 0.3
+                print(f"[RECYCLED] Bonus +0.3 a '{row['outputname']}' (is_recycled=True, record secondario)")
+            elif is_recycled and any(term in name_combined for term in ["primary", "virgin", "unalloyed", "production"]):
+                score -= 0.5
+                print(f"[RECYCLED] Malus -0.5 a '{row['outputname']}' (is_recycled=True ma record è vergine/primary)")
                 
             # Penalità di Fedeltà: Scarta la ghisa (iron/cast iron) se l'utente ha chiesto acciaio (steel)
             if "steel" in search_terms and "iron" not in search_terms and "ghisa" not in search_terms:
@@ -1220,15 +1260,11 @@ class CSVLcaClient(LCADataProvider):
                 best_row = row
 
         if best_score >= threshold and best_row is not None:
-            print(
-                f"[MATCH ✓] '{best_row['outputname']}' | {loc} "
-                f"| Score: {best_score:.3f} >= {threshold} "
-                f"| ID: {best_row['id']}"
-            )
+            print(f"[DEBUG MATCH TROVATO] ID da cercare nel JSON: '{best_row.get('id')}' | Processo: '{best_row.get('processname')}' | Location: '{best_row.get('location')}' | Impatto: {best_row.get('climatechangeimpact')}")
             return best_row
         elif best_row is not None:
             print(
-                f"[MISS  ✗] '{best_row['outputname']}' | {loc} "
+                f"[MISS FAIL] '{best_row['outputname']}' | {loc} "
                 f"| Score: {best_score:.3f} < {threshold} "
                 f"| ID: {best_row['id']}"
             )

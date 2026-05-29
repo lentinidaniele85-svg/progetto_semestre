@@ -128,6 +128,21 @@ system_prompt: |
        [ALT1], [ALT2]."
   NEVER ask the user for the material; always make a reasoned choice.
 
+  RECYCLED RULE (MANDATORY — violation is strictly forbidden):
+  If the user requests a recycled, secondary, or post-consumer material
+  (e.g. "legno riciclato", "recycled PP", "rPET", "scrap steel",
+  "materiale secondario", "da riciclo"):
+    → Keep the material name CLEAN and chemically precise
+      (e.g. "wood", "polypropylene", "PET", "steel").
+      DO NOT add "recycled", "secondary", or "scrap" to the material name.
+    → MUST set is_recycled: true on the BOMComponent.
+      This boolean is the ONLY source of truth for the DB scoring engine.
+    → Record the assumption: "Utente ha richiesto [MATERIAL] riciclato/secondario.
+      Il campo is_recycled è stato impostato a true. La ricerca nel database
+      applicherà i filtri corretti per materiali secondari/scrap."
+  If the user does NOT explicitly request recycled material:
+    → is_recycled: false (default). Do NOT infer recycled intent from context.
+
   Step 4 — Quale processo? (Mappatura Geometria)
   Let the object geometry constrain the process choice:
 

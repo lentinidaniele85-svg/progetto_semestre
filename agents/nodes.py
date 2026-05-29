@@ -193,6 +193,7 @@ async def lca_validator(state: AgentState) -> dict:
 
             original_material = orig_comp["material"]
             mass_kg = orig_comp.get("weight_kg", 1.0)
+            is_recycled_comp = orig_comp.get("is_recycled", False)
             
             GEOMETRY_TO_PROCESS = {
                 "Corpi Cavi": "Blow moulding",
@@ -200,18 +201,19 @@ async def lca_validator(state: AgentState) -> dict:
                 "Film": "Film extrusion",
                 "Profili/Tubi": "Tube extrusion"
             }
-            process_name = GEOMETRY_TO_PROCESS.get(orig_comp.get("geometry"), "Injection moulding")
+            process_name = GEOMETRY_TO_PROCESS.get(orig_comp.get("geometry"), "Injection moulding").lower()
 
             task_type = (state.get("constraints") or {}).get("task_type", "optimization")
             
             # --- Ricerca Dinamica Processo ---
-            proc_match = await provider.find_closest_match(label=process_name, location=geography, has_transport=False)
-            if proc_match and proc_match.get("climatechangeimpact") is not None:
-                process_impact = proc_match["climatechangeimpact"]
-                thought_log.append(f"[LCA Validation] Processo '{process_name}' associato al record: {proc_match.get('processname', '?')}")
+            proc_query = f"{original_material} {process_name}"
+            proc_match = await provider.find_closest_match(label=proc_query, location=geography, has_transport=False)
+            if proc_match and proc_match.get("environmental_impact") is not None:
+                process_impact = proc_match["environmental_impact"]
+                thought_log.append(f"[LCA Validation] Processo '{proc_query}' associato al record: {proc_match.get('providerName', '?')}")
             else:
-                process_impact = PROCESS_IMPACTS.get(process_name, 1.0)
-                thought_log.append(f"[LCA Validation] Processo '{process_name}' non trovato, uso default hardcoded.")
+                process_impact = PROCESS_IMPACTS.get(process_name, PROCESS_IMPACTS.get(process_name.capitalize(), 1.0))
+                thought_log.append(f"[LCA Validation] Processo '{proc_query}' non trovato, uso default hardcoded.")
             
             # Impatto materiale originale
             thought_log.append(f"Termine tradotto: {original_material}")
@@ -220,6 +222,7 @@ async def lca_validator(state: AgentState) -> dict:
                 target_geography=geography,
                 task_type=task_type,
                 thought_log=thought_log,
+                is_recycled=is_recycled_comp,
             )
 
             if not orig_match or orig_match.get("environmental_impact") is None:
@@ -311,12 +314,14 @@ async def lca_validator(state: AgentState) -> dict:
             alt_results: list[dict] = []
             for alt in component_alts.get("alternatives", []):
                 alt_name = alt["name"]
+                is_recycled_alt = alt.get("is_recycled", False)
                 thought_log.append(f"Termine tradotto: {alt_name}")
                 alt_match = await provider.find_closest_match(
                     target_product=alt_name,
                     target_geography=geography,
                     task_type=task_type,
                     thought_log=thought_log,
+                    is_recycled=is_recycled_alt,
                 )
 
                 if not alt_match or alt_match.get("environmental_impact") is None:
@@ -428,33 +433,54 @@ async def lca_validator(state: AgentState) -> dict:
         
         constraints = state.get("constraints") or {}
         global_mode = constraints.get("transport_mode")
-        if not global_mode:
-            user_input_lower = (state.get("user_input") or "").lower()
-            if any(w in user_input_lower for w in ["nave", "ship", "container", "sea freight", "ferry", "traghetto"]):
-                global_mode = "ship"
-            elif any(w in user_input_lower for w in ["aereo", "aircraft", "air freight", "flight"]):
-                global_mode = "aircraft"
-            else:
-                global_mode = "lorry"
-        global_mode = global_mode.lower()
+        # Fallback condizionale: 'lorry' SOLO se c'è trasporto (distance_km > 0) ma manca il mezzo.
+        # Se mancano entrambi, global_mode rimane None e i componenti useranno dist=0 (market for).
+        # Il text-scan su user_input è rimosso: la fonte di verità è il campo constraints strutturato.
+        global_mode = (global_mode or "").lower() or None
 
         for orig_comp in (state.get("bom") or []):
             mass_kg = orig_comp.get("weight_kg", 1.0)
-            comp_mode = (orig_comp.get("transport_mode") or global_mode).lower()
+            comp_mode = (orig_comp.get("transport_mode") or global_mode)
+            if comp_mode:
+                comp_mode = comp_mode.lower()
             
             eff_dist = orig_comp.get("distance_km") or logistics.get("distance_km") or 0
             
             if eff_dist > 0:
+                # Se la distanza c'è ma manca il mezzo: fallback deterministico a 'lorry'
+                if comp_mode is None:
+                    comp_mode = "lorry"
+                    thought_log.append(f"[Trasporto] Componente '{orig_comp.get('name')}': distanza presente ma mezzo non specificato. Fallback a 'lorry'.")
                 c_tkm = (mass_kg / 1000.0) * eff_dist
                 total_tkm += c_tkm
                 
-                transp_match = await provider.find_closest_match(label=comp_mode, location=geography, has_transport=True)
-                if transp_match and transp_match.get("climatechangeimpact") is not None:
-                    c_factor = transp_match["climatechangeimpact"]
-                    thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' associato al record: {transp_match.get('processname', '?')}")
+                search_mode = comp_mode
+                if any(w in comp_mode for w in ["lorry", "truck", "strada", "camion"]):
+                    search_mode = "transport, freight, lorry, unspecified"
+                elif any(w in comp_mode for w in ["ship", "nave", "sea", "ocean"]):
+                    search_mode = "transport, freight, sea, transoceanic ship"
+                elif any(w in comp_mode for w in ["aircraft", "aereo", "plane"]):
+                    search_mode = "transport, freight, aircraft"
+                
+                comp_mode = search_mode # Normalizza anche nello stato del grafo
+                
+                transp_match = None
+                # Proxy geografico per trasporti: se non trova nella geo locale, prova regionali
+                proxy_geos = []
+                for g in [geography, "RER", "GLO", "RoW"]:
+                    if g not in proxy_geos:
+                        proxy_geos.append(g)
+                for proxy_geo in proxy_geos:
+                    transp_match = await provider.find_closest_match(label=comp_mode, location=proxy_geo, has_transport=True)
+                    if transp_match and transp_match.get("environmental_impact") is not None:
+                        break
+                
+                if transp_match and transp_match.get("environmental_impact") is not None:
+                    c_factor = transp_match["environmental_impact"]
+                    thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' associato al record: {transp_match.get('providerName', '?')}")
                 else:
-                    c_factor = SHIP_IMPACT_PER_TKM if comp_mode == "ship" else (AIRCRAFT_IMPACT_PER_TKM if comp_mode == "aircraft" else TRANSPORT_IMPACT_PER_TKM)
-                    thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' non trovato nel DB, uso fallback.")
+                    c_factor = SHIP_IMPACT_PER_TKM if "sea" in comp_mode else (AIRCRAFT_IMPACT_PER_TKM if "aircraft" in comp_mode else TRANSPORT_IMPACT_PER_TKM)
+                    thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' non trovato nel DB (nemmeno nei proxy), uso fallback.")
                 
                 component_transport_impact = c_tkm * c_factor
                 transport_impact_total += component_transport_impact
@@ -542,6 +568,13 @@ def mcda_scorer(state: AgentState) -> dict:
             alt_cost: float = s.get("cost_per_kg", s.get("cost_tier", 0.0))
             alt_energy: float = s.get("energy_mj", 0.0)
             alt_cost_tier: int = s.get("cost_tier", 0)
+
+            if alt_co2 >= orig_co2:
+                if ita:
+                    thought_log.append(f"Scartata alternativa '{alt['name']}': impatto CO2 ({alt_co2:.3f}) >= baseline ({orig_co2:.3f}).")
+                else:
+                    thought_log.append(f"Discarded alternative '{alt['name']}': CO2 impact ({alt_co2:.3f}) >= baseline ({orig_co2:.3f}).")
+                continue
 
             delta_co2 = _safe_delta(orig_co2, alt_co2)
             delta_cost = _safe_delta(orig_cost, alt_cost)

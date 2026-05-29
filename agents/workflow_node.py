@@ -3,13 +3,73 @@ from typing import Optional
 import logging
 # pyrefly: ignore [missing-import]
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel, Field
 from agents.state import AgentState
 from core.llm_factory import ModelFactory
 from data.provider_factory import get_lca_provider
-from agents.schemas import WorkflowAndBOMResponse
+from agents.schemas import WorkflowAndBOMResponse, BOMComponent
 from agents.nodes import _invoke_structured
 import asyncio
 import unicodedata
+
+
+# ---------------------------------------------------------------------------
+# TICKET 1: MassEstimation — Schema e Funzione LLM Estimator
+# ---------------------------------------------------------------------------
+
+class MassEstimation(BaseModel):
+    """Output strutturato dell'LLM Mass Estimator."""
+    mass_kg: float = Field(
+        gt=0.0,
+        description="Stima della massa funzionale in kg per l'oggetto o lotto descritto dall'utente."
+    )
+    reasoning: str = Field(
+        description="Breve spiegazione del ragionamento usato per dedurre la massa (es. standard industriale, confronto con prodotti analoghi)."
+    )
+
+
+_MASS_ESTIMATOR_SYSTEM_PROMPT = (
+    "Sei un ingegnere industriale senior specializzato in stime dimensionali e LCA. "
+    "Il tuo compito è stimare la massa funzionale (in kg) di un oggetto o lotto di materiale "
+    "descritto dall'utente, basandoti sulla tua conoscenza di norme industriali, cataloghi di prodotto "
+    "e standard ingegneristici internazionali.\n"
+    "Regole:\n"
+    "1) Se l'input è un oggetto specifico (es. 'una sedia', 'un tubo da cantiere'): stima il peso tipico "
+    "di un'unità standard di quel prodotto (es. sedia residenziale = 4.5 kg, tubo PVC DN110 x 1m = 1.2 kg).\n"
+    "2) Se l'input è un materiale grezzo (es. 'polietilene', 'acciaio'): stima un lotto industriale standard "
+    "(es. pellet PP = 25 kg = sacco standard, foglio di acciaio = 50 kg).\n"
+    "3) Se menziona un quantitativo vago (es. 'un lotto', 'una produzione'): usa il lotto minimo standard "
+    "del settore pertinente.\n"
+    "4) Restituisci SEMPRE mass_kg > 0 e spiega brevemente il ragionamento in 'reasoning'.\n"
+    "5) ATTENZIONE: Il campo `mass_kg` dello schema MassEstimation deve essere espresso rigorosamente in CHILOGRAMMI (kg). Se l'oggetto analizzato pesa meno di un chilo (es. grammi), devi effettuare la conversione in frazioni decimali. Esempio: se una racchetta da padel pesa 360 grammi, devi restituire 0.36, NON 360.0. Non confondere mai i grammi con i chilogrammi.\n"
+    "NON chiedere all'utente chiarimenti. Scegli la stima più plausibile e procedi."
+)
+
+
+async def _estimate_mass_with_llm(user_input: str, llm=None) -> tuple[float, str]:
+    """Invoca l'LLM per stimare la massa funzionale dall'input utente.
+
+    Returns:
+        (mass_kg: float, reasoning: str) — sempre valori positivi.
+        In caso di errore LLM: (1.0, messaggio di errore).
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+    try:
+        if llm is None:
+            llm = ModelFactory.get_model()
+        chain = llm.with_structured_output(MassEstimation)
+        result: MassEstimation = await asyncio.to_thread(
+            chain.invoke,
+            [
+                SystemMessage(content=_MASS_ESTIMATOR_SYSTEM_PROMPT),
+                HumanMessage(content=user_input),
+            ]
+        )
+        return result.mass_kg, result.reasoning
+    except Exception as exc:
+        _log.warning("[LLM Mass Estimator] Fallback a 1.0 kg per errore LLM: %s", exc)
+        return 1.0, f"Stima LLM non disponibile ({exc}). Usato valore minimo di sicurezza: 1.0 kg."
 
 def normalize_text(text: str) -> str:
     """Rimuove accenti e normalizza la stringa (es. 'Perù' -> 'Peru')."""
@@ -441,7 +501,8 @@ ASSUMPTION-FIRST RULES (mandatory):
 - If material is missing → choose the most plausible one by technical exclusion (Step 3) and record the assumption.
 - If geography is missing in Constraints → DO NOT INFER IT. You MUST leave geography as null so the Gap Analysis can handle it!
 - HARD LOCK GEOGRAPHY: If the user specifies a geography/nation (e.g., 'in Perù') or if it's in Constraints, it is a PRIMARY CONSTRAINT. You MUST extract it, translate it to English, and NEVER declare it 'not specified'.
-- MATERIAL SPECIFICITY: Output the basic industrial material name (e.g., 'steel', 'aluminum', 'polypropylene'). DO NOT add adjectives like 'virgin', 'natural', or 'primary'. Our database logic will automatically filter out waste/scrap datasets. NEVER use 'waste' or 'recycled' unless explicitly requested by the user.
+- MATERIAL SPECIFICITY: Output the basic industrial material name (e.g., 'steel', 'aluminum', 'polypropylene'). DO NOT add adjectives like 'virgin', 'natural', or 'primary'. Our database logic will automatically filter out waste/scrap datasets. NEVER use 'waste' or 'recycled' in the material name field.
+- RECYCLED RULE (MANDATORY): If the user requests a recycled/secondary material (e.g. 'legno riciclato', 'recycled PP', 'rPET', 'scrap steel'), keep the material name CLEAN (e.g. 'wood', 'polypropylene') but MUST set is_recycled=true on the BOMComponent. is_recycled is the ONLY source of truth for the database scoring engine. NEVER add 'recycled' to the material name — this destroys DB matching.
 - You MUST translate BOTH the extracted material name and the geography into English.
 - NEVER leave fields at zero or undefined when an assumption can fill them.
 
@@ -539,18 +600,34 @@ ALWAYS ensure:
                 
             elif attempt_count == 1:
                 # =========================================================
-                # TENTATIVO 1: L'utente ha saltato la domanda -> Fallback deterministici
+                # TENTATIVO 1: L'utente ha saltato la domanda -> LLM Estimator
                 # =========================================================
-                thought_log.append("Gap Analysis (Tentativo 2): Dati ancora assenti. Applicazione gerarchia di default.")
+                thought_log.append("Gap Analysis (Tentativo 2): Dati ancora assenti. Attivazione LLM Estimator per deduzione autonoma.")
                 
                 if "massa" in missing_fields:
-                    mass = 5.0
-                    result.total_mass_kg = 5.0  # Aggiorniamo la distinta base effettiva
-                    assumptions.append("Massa non specificata: assunto valore di default industriale di 5.0 kg.")
+                    # TICKET 1: Invoca l'LLM per stimare la massa funzionale dal contesto
+                    # (nessun numero hardcoded — il sistema ragiona, non assume)
+                    estimated_mass, mass_reasoning = await _estimate_mass_with_llm(
+                        state.get("user_input", ""), llm=llm
+                    )
+                    mass = estimated_mass
+                    result.total_mass_kg = estimated_mass
+                    constraints["mass"] = estimated_mass
+                    _mass_log = (
+                        f"[LLM Mass Estimator] Massa non fornita dall'utente. "
+                        f"Stima LLM: {estimated_mass:.3f} kg. "
+                        f"Ragionamento: {mass_reasoning}"
+                    )
+                    thought_log.append(_mass_log)
+                    assumptions.append(
+                        f"Massa non specificata. L'LLM ha stimato {estimated_mass:.3f} kg "
+                        f"basandosi sul contesto: {mass_reasoning}"
+                    )
                     
                 if "luogo (geografia)" in missing_fields:
                     geography = "Europe (RER)"
                     result.geography = "Europe (RER)"
+                    constraints["geography"] = "Europe (RER)"
                     assumptions.append("Geografia non specificata: assunto mercato europeo di default (RER).")
                     
                 if "distanza di trasporto" in missing_fields:
@@ -567,6 +644,23 @@ ALWAYS ensure:
             thought_log.append("Passo 3: Selezione del materiale completata.")
         else:
             thought_log.append("Step 3: Material selection completed.")
+
+        # --- SALVAGUARDIA MATERIALE SINGOLO ---
+        if result.is_material_only or not result.components:
+            # Se la BOM è rimasta vuota ma l'utente ha chiesto un materiale, iniettiamo il componente radice
+            extracted_material = constraints.get("material", "polypropylene")
+            if not result.components:
+                result.components = []
+            result.components.append(
+                BOMComponent(
+                    name=extracted_material.capitalize(),
+                    material=extracted_material,
+                    weight_kg=state.get("total_mass_kg", result.total_mass_kg or 1.0),
+                    is_material_only=True,
+                    manufacturing_process=constraints.get("manufacturing_process", "injection moulding"),
+                    material_source="Pending"
+                )
+            )
 
         bom = []
 
@@ -615,16 +709,21 @@ ALWAYS ensure:
             mat = normalize_text(mat)
             comp["material"] = mat
 
+            # Propagate is_recycled from Pydantic component — UNICA fonte di verità
+            comp["is_recycled"] = comp_data.is_recycled if hasattr(comp_data, "is_recycled") else comp.get("is_recycled", False)
+
             # 1. Fuzzy Match del materiale nel DataSet.xlsx
             comp_dist = comp.get("distance_km")
             eff_dist = comp_dist if comp_dist is not None else (dist_km or 0.0)
             has_transport = dist_km is not None and dist_km > 0
+            is_recycled_comp = comp.get("is_recycled", False)
             best_match = await provider.find_closest_match(
                 mat,
                 location=geography,
                 task_type=state.get("constraints", {}).get("task_type", "optimization"),
                 has_transport=has_transport,
                 thought_log=thought_log,
+                is_recycled=is_recycled_comp,
             )
 
             if not best_match or best_match.get("environmental_impact") is None:
@@ -636,7 +735,7 @@ ALWAYS ensure:
                 suggested_alt = {"marble": "natural stone o concrete", "carbon fiber": "glass fiber o generic composite", "bamboo": "wood o generic biomass", "hemp": "natural fiber o flax", "kevlar": "aramid fiber", "titanium": "stainless steel o aluminum alloy"}.get(mat.lower(), "una categoria superiore (es. 'natural stone' o 'concrete')")
 
                 error_msg = (
-                    f"⚠️ **Materiale non trovato nel database LCA** (soglia similarità: 0.85).\n\n"
+                    f"⚠️ **Materiale non trovato nel database LCA** (soglia similarità: 0.85 e fallback 0.75 falliti).\n\n"
                     f"Il materiale **'{mat}'** non è presente nel dataset ecoinvent "
                     f"per la geografia **'{display_geo}'** né nei proxy regionali (RER, GLO, RoW).\n\n"
                     f"Questo blocco è necessario per garantire che i calcoli di sostenibilità siano basati su dati certificati e non su stime incerte.\n\n"
@@ -684,42 +783,55 @@ ALWAYS ensure:
                 comp["material_source"] = best_match["flowName"]
                 comp["unit_impact_value"] = best_match["environmental_impact"]
 
-            # DIRETTIVA 3: Process Mapper — Name-First con Fallback Geometrico
-            # Priorità assoluta al nome del componente (deterministico);
-            # fallback alla geometria LLM solo se il componente non è in COMPONENT_PROCESS_MAPPER.
+            # DIRETTIVA 3: Process Mapper — Material-First con Fallback sul Nome
+            # 1. Priorità assoluta al materiale.
+            # 2. Gating per Polimeri/Compositi: se il materiale contiene keyword specifiche, salta il nome e usa il ProcessResolver.
+            # 3. Fallback sul Nome: check deterministico (es. 'frame' -> 'Metal working') solo se non è polimero/composito.
             if not is_material_only:
+                mat_lower = mat.lower()
+                geom_lower = (comp.get("geometry") or "Pezzi Pieni Complessi").lower()
                 component_name_for_lookup = comp.get("name", "")
-                process_by_name = get_process_by_component_name(component_name_for_lookup)
 
-                if process_by_name:
-                    comp["manufacturing_process"] = process_by_name
-                    logger.debug(
-                        "ProcessMapper [NAME-FIRST]: '%s' → '%s' (deterministico per nome)",
-                        component_name_for_lookup, process_by_name,
-                    )
-                    thought_log.append(
-                        f"ProcessMapper: '{component_name_for_lookup}' → '{process_by_name}' "
-                        f"[deterministico per nome]"
-                    )
+                # 1. CATEGORIA ELETTRO-ELETTRONICA (Semiconduttori e circuiti)
+                if any(w in mat_lower for w in ["silicon", "silicio", "semiconductor", "microchip", "wafer", "germanium"]):
+                    process_name = "electronic component production, wafer fabrication"
+
+                # 2. CATEGORIA POLIMERI E COMPOSITI (Plastiche e strutture leggere)
+                elif any(w in mat_lower for w in ["plastic", "pet", "hdpe", "pvc", "pp", "abs", "poly", "carbon fiber", "carbon fibre", "epoxy", "resin", "fiberglass"]):
+                    process_name = "injection moulding"
+
+                # 3. CATEGORIA METALLI (Ferrosi e non ferrosi)
+                elif any(w in mat_lower for w in ["metal", "steel", "iron", "aluminium", "aluminum", "copper", "titanium", "brass", "alluminio", "acciaio", "rame"]):
+                    process_name = "metal working"
+
+                # 4. CATEGORIA MATERIALI BIO-BASED E LEGNO (Arredamento e bio-packaging)
+                elif any(w in mat_lower for w in ["wood", "legno", "timber", "bamboo", "paper", "carta", "cardboard", "cartone"]):
+                    process_name = "woodworking"
+
+                # 5. CATEGORIA VETRO E CERAMICA (Packaging in vetro, isolanti, edilizia)
+                elif any(w in mat_lower for w in ["glass", "vetro", "silica", "ceramic", "ceramica", "porcelain", "clay"]):
+                    process_name = "glass production"
+
+                # 6. CATEGORIA TESSILE (Abbigliamento, rivestimenti, filati)
+                elif any(w in mat_lower for w in ["cotton", "cotone", "wool", "lana", "polyester textile", "nylon textile", "fabric", "tessuto", "yarn"]):
+                    process_name = "textile production, weaving"
+
+                # 7. FALLBACK GENERALE DETERMINISTICO SE NESSUNA CATEGORIA COMBACIA
                 else:
-                    # PROCESS RESOLVER — attivo solo se il componente non è in COMPONENT_PROCESS_MAPPER.
-                    # Ragiona su (material_class, geometry_class) invece di keyword matching.
-                    geom_label = comp.get("geometry") or "Pezzi Pieni Complessi"
-                    resolved = resolve_process(
-                        material=mat,
-                        geometry_label=geom_label,
-                        component_name=component_name_for_lookup,
-                    )
-                    comp["manufacturing_process"] = resolved
-                    logger.warning(
-                        "ProcessResolver [FALLBACK]: '%s' non in COMPONENT_PROCESS_MAPPER. "
-                        "ProcessResolver: mat='%s', geom='%s' → process='%s'.",
-                        component_name_for_lookup, mat, geom_label, resolved,
-                    )
-                    thought_log.append(
-                        f"ProcessResolver: '{component_name_for_lookup}' (mat='{mat}', geom='{geom_label}') "
-                        f"→ '{resolved}' [resolver — aggiungere a COMPONENT_PROCESS_MAPPER se ricorrente]"
-                    )
+                    if "pezzi pieni" in geom_lower or "complesso" in geom_lower:
+                        process_name = "injection moulding"
+                    else:
+                        process_name = "metal working"
+
+                comp["manufacturing_process"] = process_name
+                logger.debug(
+                    "ProcessMapper [TAXONOMY]: Materiale '%s' (geom '%s') -> Processo: '%s'",
+                    mat, geom_lower, process_name
+                )
+                thought_log.append(
+                    f"ProcessMapper: Componente '{component_name_for_lookup}' con materiale '{mat}' "
+                    f"assegnato al processo '{process_name}' (Tassonomia Estesa)"
+                )
             else:
                 comp["geometry"] = None
                 comp["manufacturing_process"] = None
@@ -757,7 +869,14 @@ ALWAYS ensure:
             f"({log_type})."
         )
         tkm = (mass / 1000.0) * dist_km
-        transport_mode_val = getattr(result, "transport_mode", "lorry") or "lorry"
+        transport_mode_val = getattr(result, "transport_mode", None)
+        # Fallback condizionale: 'lorry' SOLO se c'è una distanza da percorrere ma manca il mezzo.
+        # Se mancano entrambi (dist_km == 0), il trasporto è nei dataset 'market for' → nessun fallback.
+        if transport_mode_val is None and dist_km and dist_km > 0:
+            transport_mode_val = "lorry"
+            thought_log.append("[Logistica] Mezzo di trasporto non specificato ma distanza presente: fallback deterministico a 'lorry'.")
+        elif transport_mode_val is None:
+            transport_mode_val = "lorry"  # default per il campo logistics_data, non influisce sul calcolo tkm=0
         logistics = {
             "geography": geography,                                      # Nazione di produzione
             "supplier_country": supplier_country or geography,           # Fallback: usa geography
@@ -793,6 +912,7 @@ ALWAYS ensure:
             "detected_geometry": result.components[0].geometry if result.components else "Unknown",
             "logistics_data": logistics,
             "assumptions_list": unique_assumptions,
+            "constraints": constraints,
         }
 
     except Exception as exc:

@@ -86,29 +86,34 @@ def mock_client() -> CSVLcaClient:
     Bypassa la lettura del file Excel reale.
     """
     client = CSVLcaClient()           # usa il DataSet.xlsx reale per l'init
-    # Sostituiamo _df con uno sintetico e ricostruiamo le colonne di supporto
+    # Sostituiamo _df con uno sintetico e ricostruiamo le colonne di supporto.
+    # NOTA: le location usano i valori canonici del sistema (non i codici ecoinvent GLO/RER)
+    # perché _get_location_subset confronta con case-insensitive ma la catena di fallback
+    # cerca "Global" e "Europe without Switzerland" — non "GLO" / "RER".
     fake_df = pd.DataFrame([
         {
             "id": "mock-001",
             "processname": "market for polypropylene, global",
             "outputname": "polypropylene, granulate",
-            "location": "GLO",
+            "location": "Global",
             "climatechangeimpact": 2.1,
         },
         {
             "id": "mock-002",
             "processname": "polypropylene production, mass polymerisation",
             "outputname": "polypropylene production granulate",
-            "location": "RER",
+            "location": "Europe without Switzerland",
             "climatechangeimpact": 1.8,
         },
     ], dtype=str)
     fake_df["climatechangeimpact"] = pd.to_numeric(fake_df["climatechangeimpact"])
     fake_df["_flowname_lower"] = fake_df["outputname"].str.lower()
+    fake_df["_processname_lower"] = fake_df["processname"].str.lower()
     client._df = fake_df
     client._search_cache = {}
     client._match_cache = {}
     return client
+
 
 
 def _run_find(client: CSVLcaClient, *args, **kwargs):
@@ -119,7 +124,7 @@ def _run_find(client: CSVLcaClient, *args, **kwargs):
 def test_find_closest_match_market_is_market_true(mock_client: CSVLcaClient) -> None:
     """Un processname contenente 'market' deve restituire is_market=True."""
     with patch("data.csv_lca_client.generate_search_queries",
-               new_callable=lambda: lambda: AsyncMock(side_effect=lambda m: [m])):
+               new=AsyncMock(side_effect=lambda m: [m])):
         result = _run_find(mock_client, "polypropylene, granulate")
     assert result is not None, "find_closest_match non deve restituire None"
     assert "is_market" in result, "Il campo is_market deve essere presente nel dict"
@@ -131,8 +136,10 @@ def test_find_closest_match_market_is_market_true(mock_client: CSVLcaClient) -> 
 def test_find_closest_match_production_is_market_false(mock_client: CSVLcaClient) -> None:
     """Un processname senza 'market' deve restituire is_market=False."""
     with patch("data.csv_lca_client.generate_search_queries",
-               new_callable=lambda: lambda: AsyncMock(side_effect=lambda m: [m])):
-        result = _run_find(mock_client, "polypropylene production granulate")
+               new=AsyncMock(side_effect=lambda m: [m])):
+        # Usa location esplicita per puntare alla riga mock-002 (polypropylene production, RER).
+        # Il label "polypropylene" è riconosciuto direttamente dal SemanticNormalizer.
+        result = _run_find(mock_client, "polypropylene", location="Europe without Switzerland")
     assert result is not None, "find_closest_match non deve restituire None"
     assert "is_market" in result, "Il campo is_market deve essere presente nel dict"
     assert result["is_market"] is False, (
@@ -140,10 +147,11 @@ def test_find_closest_match_production_is_market_false(mock_client: CSVLcaClient
     )
 
 
+
 def test_find_closest_match_returns_all_expected_keys(mock_client: CSVLcaClient) -> None:
     """find_closest_match deve restituire tutti i campi attesi."""
     with patch("data.csv_lca_client.generate_search_queries",
-               new_callable=lambda: lambda: AsyncMock(side_effect=lambda m: [m])):
+               new=AsyncMock(side_effect=lambda m: [m])):
         result = _run_find(mock_client, "polypropylene, granulate")
     expected_keys = {"id", "providerName", "flowName", "location", "environmental_impact", "is_market"}
     assert expected_keys.issubset(result.keys()), (
@@ -154,7 +162,7 @@ def test_find_closest_match_returns_all_expected_keys(mock_client: CSVLcaClient)
 def test_find_closest_match_no_match_returns_none(client: CSVLcaClient) -> None:
     """Con un label totalmente inventato e soglia alta, deve restituire None."""
     with patch("data.csv_lca_client.generate_search_queries",
-               new_callable=lambda: lambda: AsyncMock(side_effect=lambda m: [m])):
+               new=AsyncMock(side_effect=lambda m: [m])):
         result = _run_find(client, "xyzzy_material_that_does_not_exist_9999", threshold=0.9)
     assert result is None, "Expected None per un label senza corrispondenza"
 

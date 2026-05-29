@@ -116,6 +116,9 @@ attempt_count == 1 (secondo tentativo):
   → phase="workflow" → PROCEDE
 ```
 
+**ProcessResolver (Material-First):**
+Ragiona su classi anziché su nomi (es. `material_class="thermoplastic"` + `geometry_class="solid"` → `Injection moulding`). Sostituisce il mapping deterministico legacy per polimeri/compositi, dando priorità al materiale invece che alla geometria.
+
 **Fuzzy Match nel DB:**
 ```python
 has_transport = dist_km is not None and dist_km > 0
@@ -140,10 +143,11 @@ best_match = provider.find_closest_match(
 
 ### `material_ideator` (`material_node.py`)
 - Solo per `task_type="optimization"`
-- Chiama LLM per proporre alternative di materiali sostenibili per ogni componente BOM
+- Chiama LLM per proporre alternative di materiali sostenibili per ogni componente BOM. LLM ora indirizza varianti certificate (es. per carbon fiber).
 - Output: `semantic_alternatives` con giustificazione, aesthetic_match, structural_match
 
 ### `mcda_scorer` (sincrono, `nodes.py`)
+- **Impact Barrier:** scarta ogni alternativa la cui CO₂ è `>=` a quella della baseline.
 ```
 score = Δ_CO2 × w_co2 + Δ_costo × w_cost + Δ_energia × w_energy
 ```
@@ -184,10 +188,11 @@ Output strutturato del `workflow_bom_ideator`:
 
 ## 6. Database LCA — `csv_lca_client.py`
 
-### Caricamento
+### Caricamento e Ottimizzazioni Log
 - `DataSet.xlsx` → Pandas DataFrame in memoria all'avvio
 - Colonne richieste: `id`, `processname`, `outputname`, `location`, `climatechangeimpact`
-- Pre-calcolo colonne lowercase (`_flowname_lower`, `_processname_lower`) per velocità
+- Pre-calcolo colonne lowercase (`_flowname_lower`, `_processname_lower`) per velocità e case-insensitivity nei processi logistici
+- Log delle elaborazioni basati su UUID e campi normalizzati anziché su row index Pandas, per agevolare il debugging.
 
 ### `find_closest_match()` — 3 stadi
 

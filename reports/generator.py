@@ -17,43 +17,38 @@ def generate_html_report(state: dict) -> str:
     assumptions_list: list[str] = state.get("assumptions_list") or []
     generated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    ita = False
-    ita_words = {"di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "una", "e", "o", "ma", "che", "non", "si", "mi", "ti", "ci", "vi", "kg"}
-    words = set(user_input.lower().replace(".", " ").replace(",", " ").split())
-    if len(words.intersection(ita_words)) > 0:
-        ita = True
-
     task_type = (state.get("constraints") or {}).get("task_type", "optimization")
     
     if task_type == "modeling":
-        t_report = "Report di Analisi Impatto LCA" if ita else "LCA Impact Analysis Report"
+        t_report = "Report di Analisi Impatto LCA"
     else:
-        t_report = "Report di Ottimizzazione Sostenibile" if ita else "Sustainable Product Optimization Report"
-    t_generated = "Generato il" if ita else "Generated"
-    t_powered = "Powered by LangGraph & LCA data" if ita else "Powered by LangGraph & LCA data"
-    t_bom = "Distinta Base Originale (BOM)" if ita else "Original Bill of Materials"
-    t_comp = "Componente" if ita else "Component"
-    t_mat = "Materiale" if ita else "Material"
-    t_weight = "Peso (kg)" if ita else "Weight (kg)"
-    t_opt_sum = "Riepilogo Ottimizzazione" if ita else "Optimization Summary"
-    t_orig_mat = "Materiale Originale" if ita else "Original Material"
-    t_rec_alt = "Alternativa Consigliata" if ita else "Recommended Alternative"
-    t_co2_red = "Riduzione CO&#8322;" if ita else "CO&#8322; Reduction"
-    t_just = "Giustificazione" if ita else "Justification"
-    t_co2_impact = "Impatto CO&#8322;" if ita else "CO&#8322; Impact Comparison"
-    t_orig_co2 = "CO&#8322; Totale Originale" if ita else "Original Total CO&#8322;"
-    t_opt_co2 = "CO&#8322; Totale Ottimizzato" if ita else "Optimised Total CO&#8322;"
-    t_red_over = "Riduzione Totale" if ita else "Overall Reduction"
-    t_improv = "miglioramento" if ita else "improvement"
-    t_break = "Dettaglio per Componente" if ita else "Per-Component Breakdown"
-    t_orig_co2_kg = "CO&#8322; Originale (kg)" if ita else "Original CO&#8322; (kg)"
-    t_opt_co2_kg = "CO&#8322; Ottimizzato (kg)" if ita else "Optimised CO&#8322; (kg)"
-    t_red = "Riduzione" if ita else "Reduction"
-    t_workflow = "Tabella dei Processi (Workflow)" if ita else "Tabella dei Processi (Workflow)"
-    t_phase = "Fase" if ita else "Phase"
-    t_proc = "Processo Manifatturiero" if ita else "Manufacturing Process"
-    t_out = "Output Atteso" if ita else "Expected Output"
-    t_assump = "Assunzioni e Dati Esterni (Ricerca Online)" if ita else "Assumptions & External Data (Online Search)"
+        t_report = "Report di Ottimizzazione Sostenibile"
+        
+    t_generated = "Generato il"
+    t_powered = "Powered by LangGraph & LCA data"
+    t_bom = "Distinta Base Originale (BOM)"
+    t_comp = "Componente"
+    t_mat = "Materiale"
+    t_weight = "Quantità / Unità"
+    t_opt_sum = "Riepilogo Ottimizzazione"
+    t_orig_mat = "Materiale Originale"
+    t_rec_alt = "Alternativa Consigliata"
+    t_co2_red = "Riduzione CO&#8322;"
+    t_just = "Giustificazione"
+    t_co2_impact = "Impatto CO&#8322;"
+    t_orig_co2 = "CO&#8322; Totale Originale"
+    t_opt_co2 = "CO&#8322; Totale Ottimizzato"
+    t_red_over = "Riduzione Totale"
+    t_improv = "miglioramento"
+    t_break = "Dettaglio per Componente"
+    t_orig_co2_kg = "CO&#8322; Originale (kg)"
+    t_opt_co2_kg = "CO&#8322; Ottimizzato (kg)"
+    t_red = "Riduzione"
+    t_workflow = "Tabella dei Processi (Workflow)"
+    t_phase = "Fase"
+    t_proc = "Processo Manifatturiero"
+    t_out = "Output Atteso"
+    t_assump = "Assunzioni e Dati Esterni (Ricerca Online)"
 
 
     orig_co2: dict[str, float] = {
@@ -74,7 +69,7 @@ def generate_html_report(state: dict) -> str:
         display_bom = []
         for item in bom:
             display_bom.append({
-                "name": f"{item.get('name', '')} (Material)",
+                "name": f"{item.get('name', '')} (Materiale)",
                 "material": item.get('material', ''),
                 "weight_kg": item.get('weight_kg', '')
             })
@@ -84,13 +79,13 @@ def generate_html_report(state: dict) -> str:
                 if isinstance(proc, list):
                     for p in proc:
                         display_bom.append({
-                            "name": f"{item.get('name', '')} (Manufacturing)",
+                            "name": f"{item.get('name', '')} (Processo)",
                             "material": p,
                             "weight_kg": item.get('weight_kg', '')
                         })
                 else:
                     display_bom.append({
-                        "name": f"{item.get('name', '')} (Manufacturing)",
+                        "name": f"{item.get('name', '')} (Processo)",
                         "material": proc,
                         "weight_kg": item.get('weight_kg', '')
                     })
@@ -99,12 +94,12 @@ def generate_html_report(state: dict) -> str:
         transport_comp = next((c for c in lca_results if c.get("component_name") == "Transport"), None)
         if transport_comp:
             t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
-            mat_name = transport_comp.get("original_material", f"{t_mode.capitalize()} transport")
+            mat_name = transport_comp.get("original_material", f"Trasporto {t_mode}")
             amount = transport_comp.get("original_scores", {}).get("amount", "-")
             if amount != "-":
-                mat_name += f" (Amount: {amount:.1f} tkm)"
+                mat_name += f" (Quantità: {amount:.1f} tkm)"
             display_bom.append({
-                "name": "Transport",
+                "name": "Trasporto",
                 "material": mat_name,
                 "weight_kg": "-"
             })
@@ -113,8 +108,8 @@ def generate_html_report(state: dict) -> str:
             if dist:
                 t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
                 display_bom.append({
-                    "name": "Transport",
-                    "material": f"{t_mode.capitalize()} transport ({dist} km)",
+                    "name": "Trasporto",
+                    "material": f"Trasporto {t_mode} ({dist} km)",
                     "weight_kg": "-"
                 })
 
@@ -150,11 +145,16 @@ def generate_html_report(state: dict) -> str:
             best = comp.get("best_alternative")
             opt = orig * (1 - best["impact_reduction_pct"] / 100) if best else orig
             delta = ((orig - opt) / orig * 100) if orig else 0.0
+            
+            orig = round(orig, 3)
+            opt = round(opt, 3)
+            delta = round(delta, 1)
+            
             rows += (
                 f"<tr><td>{name}</td>"
-                f"<td>{orig:.4f}</td>"
-                f"<td>{opt:.4f}</td>"
-                f"<td>{delta:.1f}%</td></tr>"
+                f"<td>{orig}</td>"
+                f"<td>{opt}</td>"
+                f"<td>{delta}%</td></tr>"
             )
         return rows
 
@@ -363,6 +363,12 @@ def generate_html_report(state: dict) -> str:
     border-top: 1px solid #eee;
     padding-top: 14px;
   }}
+  @media print {{
+    body {{ padding: 20px; background: #fff; color: #000; }}
+    .card {{ page-break-inside: avoid; }}
+    table {{ page-break-inside: auto; }}
+    tr {{ page-break-inside: avoid; page-break-after: auto; }}
+  }}
 </style>
 </head>
 <body>
@@ -371,7 +377,7 @@ def generate_html_report(state: dict) -> str:
 <div class="subtitle">{t_generated} {generated_at} &nbsp;&middot;&nbsp; {t_powered}</div>
 
 <div class="meta">
-  <strong>Product Description:</strong> {user_input}
+  <strong>Descrizione Prodotto:</strong> {user_input}
 </div>
 
 <h2>&#128203; {t_bom}</h2>

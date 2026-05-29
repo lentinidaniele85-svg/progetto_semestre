@@ -148,10 +148,12 @@ class ConstraintsExtract(TransportValidatorMixin):
         )
     )
     transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(
-        default="lorry",
+        default=None,
         description=(
-            "Modalità di trasporto principale. Mappa tassativamente 'Nave' o 'Ship' -> 'ship', "
-            "'Aereo' -> 'aircraft', 'Camion'/'Lorry' -> 'lorry'."
+            "Modalità di trasporto principale. Mappa 'Nave' o 'Ship' -> 'ship', "
+            "'Aereo' -> 'aircraft', 'Camion'/'Lorry' -> 'lorry'. "
+            "Se non specificato dall'utente, lasciare null — il sistema applicherà un fallback "
+            "condizionale (lorry se è presente distance_km, nessun trasporto extra se mancano entrambi)."
         )
     )
 
@@ -186,6 +188,15 @@ class BOMComponent(BaseModel):
     supplier_country: Optional[str] = Field(default=None, description="Origine specifica di questo materiale (se diversa dal prodotto).")
     distance_km: Optional[float] = Field(default=None, ge=0.0, description="Distanza specifica di trasporto per questo componente.")
     transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(default=None)
+    is_recycled: bool = Field(
+        default=False,
+        description=(
+            "True if the user explicitly requested recycled/secondary material for this component. "
+            "CRITICAL: If the user writes 'recycled wood', 'riciclato', 'secondario', 'scrap', etc., "
+            "keep the material name CLEAN (e.g. 'wood') but MUST set is_recycled=True. "
+            "NEVER add 'recycled' to the material field — this boolean is the ONLY source of truth."
+        ),
+    )
 
 
 class BOMExtract(BaseModel):
@@ -195,6 +206,14 @@ class BOMExtract(BaseModel):
 class MaterialAlternative(BaseModel):
     name: str
     justification: str
+    is_recycled: bool = Field(
+        default=False,
+        description=(
+            "True if this alternative is a recycled/secondary material variant. "
+            "When True, the DB search engine will disable virgin-material filters "
+            "and apply recycled-content bonuses."
+        ),
+    )
     aesthetic_match: float = Field(ge=0.0, le=1.0)
     structural_match: float = Field(ge=0.0, le=1.0)
     estimated_cost_change: Optional[str] = Field(

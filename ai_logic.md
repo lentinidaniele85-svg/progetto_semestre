@@ -26,7 +26,7 @@ L'agente segue la pipeline definita nel prompt di sistema:
 | 1 | **Analisi Entità** | Materiale grezzo vs prodotto complesso (`is_material_only`) |
 | 2 | **Lookup Aggregato** | Verifica se esiste già un dataset ecoinvent per il prodotto intero |
 | 3 | **Selezione Materiale** | Inferenza LLM per esclusione tecnica; ogni inferenza va in `assumptions_list` |
-| 4 | **Vincolo Geometrico** | Geometria → processo manifatturiero (mapping deterministico Python) |
+| 4 | **Vincolo Geometrico** | Geometria → processo manifatturiero (Process Resolver Material-First) |
 | 5 | **Scomposizione BOM** | Generazione distinta base per componenti |
 | 6 | **Calcolo Logistica** | `tkm = (massa_kg / 1000) × distanza_km`; anti double-counting market |
 | 7 | **Gap Analysis** | Controllo dati mancanti → interview o assunzioni autonome |
@@ -106,8 +106,9 @@ Per i materiali puri la distanza **non viene mai chiesta** (passi 2-6 del system
 `csv_lca_client.find_closest_match()` opera in tre stadi:
 
 1. **Espansione Semantica:** il termine di ricerca viene espanso con sinonimi industriali (es. `acciaio` → `["steel", "cast iron"]`)
-2. **Fuzzy Match con Filtro Dinamico:** difflib + filtri (waste, metallo/plastica, penalty prodotti finiti)
+2. **Fuzzy Match con Filtro Dinamico:** difflib + filtri (waste, metallo/plastica, penalty prodotti finiti, case-insensitive per process e flow)
 3. **Fallback Geografico:** gerarchia `[location] → RER → GLO → RoW`
+4. **Logistica Normalizzata:** mapping termini semplici come `lorry` al dataset esatto (`transport, freight, lorry, unspecified`).
 
 **Pass 1 (soglia 0.85):** solo materiali "virgin" (no waste/scrap)  
 **Pass 2 (soglia 0.70):** fallback standard se non esiste materiale vergine
@@ -132,10 +133,15 @@ Impatto_Totale = (Impatto_Materiale × Massa_kg)
 
 ## 8. MCDA (Multi-Criteria Decision Analysis)
 
-Dopo la generazione delle alternative (`material_ideator`), l'algoritmo MCDA calcola:
+Dopo la generazione delle alternative (`material_ideator`), l'algoritmo MCDA esegue un controllo rigoroso:
+
+### Impact Barrier
+Un'alternativa viene scartata a prescindere se l'impatto climatico (CO₂) stimato è maggiore o uguale a quello del materiale originale.
+
+Se supera la barriera, l'algoritmo MCDA calcola:
 
 ```
 score = Δ_CO2 × w_co2 + Δ_costo × w_cost + Δ_energia × w_energy
 ```
 
-I pesi (`w_co2`, `w_cost`, `w_energy`) sono configurabili in `core/config.py`. L'alternativa con score più alto viene presentata come "migliore scelta bilanciata".
+I pesi (`w_co2`, `w_cost`, `w_energy`) sono configurabili in `core/config.py`. L'alternativa con score più alto viene presentata come "migliore scelta bilanciata". L'LLM Recommender suggerisce materiali sostenibili verificati (es. rPET invece di generic PET, o fibra di carbonio derivata da scarti per evitare collisioni col DB).
