@@ -118,8 +118,11 @@ class FakeLLM:
             return _FakeChain(_FAKE_WORKFLOW_RESPONSE)
         if schema is ComponentAlternatives:
             return _FakeChain(_FAKE_MATERIAL_RESPONSE.components[0])
-        if schema is MaterialIdeationResponse:
+        if schema.__name__ == "MaterialIdeationResponse":
             return _FakeChain(_FAKE_MATERIAL_RESPONSE)
+        if schema.__name__ == "SearchQueryList":
+            # Usiamo __name__ per evitare circular imports
+            return _FakeChain(schema(queries=["steel", "plastic", "aluminum", "bamboo"]))
         if schema.__name__ == "MassEstimation":
             # Usiamo __name__ per evitare circular imports
             return _FakeChain(schema(mass_kg=10.0, reasoning="Fake LLM estimation for testing"))
@@ -155,8 +158,9 @@ def _run_graph(mode: str = "auto") -> AgentState:
         patch("agents.nodes.ModelFactory") as MockNodesFactory,
         patch("agents.workflow_node.ModelFactory") as MockWorkflowFactory,
         patch("agents.material_node.ModelFactory") as MockMaterialFactory,
+        patch("core.llm_factory.ModelFactory") as MockCoreFactory,
     ):
-        for mock in (MockNodesFactory, MockWorkflowFactory, MockMaterialFactory):
+        for mock in (MockNodesFactory, MockWorkflowFactory, MockMaterialFactory, MockCoreFactory):
             mock.get_model.return_value = fake_llm
             mock.get_system_prompt.return_value = "You are a sustainability expert. {user_input} {constraints}"
         return asyncio.run(graph.ainvoke(dict(_INITIAL_STATE)))
