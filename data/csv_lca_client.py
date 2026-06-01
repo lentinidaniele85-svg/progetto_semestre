@@ -537,7 +537,8 @@ _LLM_EXPANDER_SYSTEM_PROMPT = (
     "(es. PVC -> polyvinyl chloride, PET -> polyethylene terephthalate).\n"
     "2) Includi l'acronimo stesso come fallback.\n"
     "3) Se è una plastica, aggiungi varianti comuni nei DB come 'granulate' o 'suspension polymerised'.\n"
-    "4) Usa rigorosamente la tassonomia e le convenzioni di spelling dell'Inglese Britannico (UK) per i materiali industriali. Ad esempio, traduci sempre 'fiber' in 'fibre', 'molding' in 'moulding', ecc., per garantire che l'algoritmo fuzzy superi la soglia di sbarramento dello 0.85.\n"
+    "4) Usa rigorosamente la tassonomia e le convenzioni di spelling dell'Inglese Britannico (UK) per i materiali industriali. Ad esempio, traduci sempre 'fiber' in 'fibre', 'molding' in 'moulding', etc., per garantire che l'algoritmo fuzzy superi la soglia di sbarramento dello 0.85.\n"
+    "5) Per materiali BIO-BASED e LEGNO: Ecoinvent usa la convenzione SOSTANTIVO+AGGETTIVO (es. 'sawnwood, softwood' NON 'softwood sawnwood', 'roundwood, azobe' NON 'azobe roundwood'). Genera SEMPRE i termini in questo ordine: categoria prima, specificità dopo.\n"
     "Regole per MEZZI DI TRASPORTO:\n"
     "Se il termine è un mezzo di trasporto (ship, lorry, truck, aircraft, nave, camion, aereo, ferry, ecc.), "
     "NON usare le regole per i materiali. Invece, traduci il mezzo nelle sigle di trasporto merci ecoinvent:\n"
@@ -551,6 +552,19 @@ _LLM_EXPANDER_SYSTEM_PROMPT = (
     "nel campo 'queries'."
 )
 
+_LLM_PROCESS_EXPANDER_SYSTEM_PROMPT = (
+    "Sei un esperto di ingegneria industriale e analista LCA con conoscenza approfondita del database ecoinvent. "
+    "Il tuo compito è tradurre nomi di PROCESSI DI MANIFATTURA o verbi industriali (es. 'injection moulding', 'extrusion', 'cutting', 'welding') "
+    "nei termini tecnici esatti utilizzati nel database ecoinvent. L'utente ti invierà un termine. "
+    "Tu devi restituire una lista di 3-5 stringhe di ricerca iper-precise in INGLESE.\n"
+    "Regole per PROCESSI:\n"
+    "1) Genera tassonomie di processo/verbi anziché formule chimiche o materiali.\n"
+    "2) Usa verbi o sostantivi tipici dei processi industriali di ecoinvent (es. 'extrusion', 'moulding', 'laser cutting').\n"
+    "3) Usa rigorosamente l'Inglese Britannico (UK) (es. 'moulding' con 'u', non 'molding').\n"
+    "4) Aggiungi varianti comuni nei DB come 'processing, plastic' o 'moulding, state-of-the-art'.\n"
+    "5) Includi il nome del processo originale e varianti con e senza virgole.\n"
+    "Non scrivere spiegazioni, restituisci solo una lista JSON di stringhe nel campo 'queries'."
+)
 
 
 class SearchQueryList(BaseModel):
@@ -558,20 +572,20 @@ class SearchQueryList(BaseModel):
     queries: list[str]
 
 
-async def generate_search_queries(material_name: str) -> list[str]:
+async def generate_search_queries(material_name: str, entity_type: str = "material") -> list[str]:
     """Usa l'LLM per espandere material_name in termini di ricerca Ecoinvent-precisi.
 
     Invocato in modalità asincrona (ainvoke) per non bloccare l'event loop.
     I risultati sono cachati in _llm_expansion_cache per la durata della sessione:
-    se lo stesso materiale compare su più componenti del BOM, l'LLM viene
+    se lo stesso materiale o processo compare su più componenti del BOM, l'LLM viene
     interrogato una sola volta.
 
     Fallback deterministico: se l'LLM va in timeout o restituisce un errore,
-    la funzione ricade su _expand_semantic_terms() (dizionario statico) in modo
-    trasparente, senza sollevare eccezioni verso i caller.
+    la funzione ricade su un fallback deterministico, senza sollevare eccezioni verso i caller.
 
     Args:
-        material_name: Nome del materiale normalizzato (es. "PVC", "polypropylene").
+        material_name: Nome del materiale o processo normalizzato (es. "PVC", "polypropylene", "injection moulding").
+        entity_type: "material" per i materiali o "process" per i processi di manifattura.
 
     Returns:
         Lista di stringhe di ricerca iper-precise per il DB LCA (es.
@@ -580,7 +594,7 @@ async def generate_search_queries(material_name: str) -> list[str]:
     import logging
     _log = logging.getLogger(__name__)
 
-    cache_key = material_name.strip().lower()
+    cache_key = f"{entity_type}:{material_name.strip().lower()}"
     if cache_key in _llm_expansion_cache:
         return _llm_expansion_cache[cache_key]
 
@@ -590,8 +604,11 @@ async def generate_search_queries(material_name: str) -> list[str]:
 
         llm = ModelFactory.get_model()
         chain = llm.with_structured_output(SearchQueryList)
+        
+        system_prompt = _LLM_PROCESS_EXPANDER_SYSTEM_PROMPT if entity_type == "process" else _LLM_EXPANDER_SYSTEM_PROMPT
+        
         result: SearchQueryList = await chain.ainvoke([
-            _SM(content=_LLM_EXPANDER_SYSTEM_PROMPT),
+            _SM(content=system_prompt),
             _HM(content=material_name),
         ])
         expanded: list[str] = result.queries
@@ -599,10 +616,14 @@ async def generate_search_queries(material_name: str) -> list[str]:
             raise ValueError("LLM Expander ha restituito una lista vuota")
     except Exception as exc:
         _log.warning(
-            "[LLMExpander] Fallback statico per '%s' (LLM non disponibile): %s",
-            material_name, exc,
+            "[LLMExpander] Fallback statico per '%s' (tipo: %s, LLM non disponibile): %s",
+            material_name, entity_type, exc,
         )
-        expanded = _expand_semantic_terms(material_name.lower())
+        if entity_type == "process":
+            # Fallback per i processi
+            expanded = [material_name, f"{material_name}ing", f"{material_name} moulding", f"{material_name} extrusion"]
+        else:
+            expanded = _expand_semantic_terms(material_name.lower())
 
     _llm_expansion_cache[cache_key] = expanded
     return expanded
@@ -856,6 +877,7 @@ class CSVLcaClient(LCADataProvider):
         has_transport: Optional[bool] = None,
         thought_log: Optional[list] = None,
         is_recycled: bool = False,
+        entity_type: str = "material",
     ) -> Optional[dict]:
         """Find the closest matching material using a 4-stage search logic.
 
@@ -929,7 +951,10 @@ class CSVLcaClient(LCADataProvider):
         # ── STADIO 1 AGGIORNATO: LLM Dynamic Expansion (async, con cache) ────
         # L'LLM viene sempre interrogato per garantire la massima precisione
         # semantica. In caso di errore/timeout, ricade su _expand_semantic_terms.
-        search_terms = await generate_search_queries(normalized_label)
+        if entity_type != "material":
+            search_terms = await generate_search_queries(normalized_label, entity_type=entity_type)
+        else:
+            search_terms = await generate_search_queries(normalized_label)
         _expander_msg = (
             f"[LLM Semantic Expander] Materiale '{normalized_label}' "
             f"tradotto nei termini di ricerca: {search_terms}"
@@ -1115,6 +1140,35 @@ class CSVLcaClient(LCADataProvider):
             proc_name = row["_processname_lower"]
             impact = float(row["climatechangeimpact"])
             name_combined = f"{out_name} {proc_name}"
+            
+            # GARANZIA DI IDENTITÀ (Ticket 2)
+            primary_term = search_terms[0].lower()
+            
+            # Helper to check if a term matches a string with word boundaries
+            import re as _re_match
+            def has_word_boundary_match(term: str, target: str) -> bool:
+                if len(term) <= 3:
+                    # usa word-boundary match per stringhe <= 3 caratteri come "PP" o "PE"
+                    pattern = r"\b" + _re_match.escape(term) + r"\b"
+                    return bool(_re_match.search(pattern, target))
+                else:
+                    return term in target
+            
+            # primary_term must appear in out_name OR proc_name
+            matches_primary_out = has_word_boundary_match(primary_term, out_name)
+            matches_primary_proc = has_word_boundary_match(primary_term, proc_name)
+            
+            if not (matches_primary_out or matches_primary_proc):
+                # Fallback: controlla se c'è almeno un termine nei primi 3 search_terms che matchi out_name
+                matched_any_fallback = False
+                for t in search_terms[:3]:
+                    if has_word_boundary_match(t, out_name):
+                        matched_any_fallback = True
+                        break
+                if not matched_any_fallback:
+                    print(f"[DEBUG] Scartato '{row['outputname']}' -> Fallito primary identity guard per '{primary_term}'")
+                    continue
+
             match_geom = _get_geometry(out_name)
             
             # VINCOLO GEOMETRIA: scarta se le geometrie sono diverse (es. slab vs block)

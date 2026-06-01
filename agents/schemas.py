@@ -197,6 +197,10 @@ class BOMComponent(BaseModel):
             "NEVER add 'recycled' to the material field — this boolean is the ONLY source of truth."
         ),
     )
+    is_material_only: bool = Field(
+        default=False,
+        description="True if this component is just a raw material without manufacturing process."
+    )
 
 
 class BOMExtract(BaseModel):
@@ -205,6 +209,8 @@ class BOMExtract(BaseModel):
 
 class MaterialAlternative(BaseModel):
     name: str
+    base_material: str = Field(description="Chemical base name ONLY for DB lookup. e.g. 'carbon fiber', 'steel'")
+    modifier: Optional[str] = Field(default=None, description="Sustainability attribute, e.g. 'recycled', 'bio-based'. Separated to prevent semantic anchor loss")
     justification: str
     is_recycled: bool = Field(
         default=False,

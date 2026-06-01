@@ -503,6 +503,7 @@ ASSUMPTION-FIRST RULES (mandatory):
 - HARD LOCK GEOGRAPHY: If the user specifies a geography/nation (e.g., 'in Perù') or if it's in Constraints, it is a PRIMARY CONSTRAINT. You MUST extract it, translate it to English, and NEVER declare it 'not specified'.
 - MATERIAL SPECIFICITY: Output the basic industrial material name (e.g., 'steel', 'aluminum', 'polypropylene'). DO NOT add adjectives like 'virgin', 'natural', or 'primary'. Our database logic will automatically filter out waste/scrap datasets. NEVER use 'waste' or 'recycled' in the material name field.
 - RECYCLED RULE (MANDATORY): If the user requests a recycled/secondary material (e.g. 'legno riciclato', 'recycled PP', 'rPET', 'scrap steel'), keep the material name CLEAN (e.g. 'wood', 'polypropylene') but MUST set is_recycled=true on the BOMComponent. is_recycled is the ONLY source of truth for the database scoring engine. NEVER add 'recycled' to the material name — this destroys DB matching.
+- SINGLE-MATERIAL LOCK (MANDATORY): If the user requests a quantity of a raw, bulk, or pure material (e.g. '200 kg of recycled steel', '5 tonnes of polypropylene'), the BOM MUST contain EXACTLY ONE component with 100% of the requested mass. DO NOT split into multiple sub-materials.
 - You MUST translate BOTH the extracted material name and the geography into English.
 - NEVER leave fields at zero or undefined when an assumption can fill them.
 
@@ -646,21 +647,34 @@ ALWAYS ensure:
             thought_log.append("Step 3: Material selection completed.")
 
         # --- SALVAGUARDIA MATERIALE SINGOLO ---
-        if result.is_material_only or not result.components:
-            # Se la BOM è rimasta vuota ma l'utente ha chiesto un materiale, iniettiamo il componente radice
+        if result.is_material_only:
+            if result.components and len(result.components) > 1:
+                # Mantieni solo il componente con massa maggiore
+                heaviest = max(result.components, key=lambda c: getattr(c, 'weight_kg', 0.0) or 0.0)
+                result.components = [heaviest]
+                thought_log.append("[GUARDRAIL] is_material_only=True: BOM ridotta a 1 componente (anti-splitting)")
+            
+            # Enforce is_material_only on the component and clear geometry/process
+            if result.components:
+                result.components[0].is_material_only = True
+                result.components[0].geometry = None
+                result.components[0].manufacturing_process = None
+                if mass is not None and mass > 0:
+                    result.components[0].weight_kg = mass
+
+        if not result.components:
             extracted_material = constraints.get("material", "polypropylene")
-            if not result.components:
-                result.components = []
-            result.components.append(
+            result.components = [
                 BOMComponent(
                     name=extracted_material.capitalize(),
                     material=extracted_material,
                     weight_kg=state.get("total_mass_kg", result.total_mass_kg or 1.0),
-                    is_material_only=True,
-                    manufacturing_process=constraints.get("manufacturing_process", "injection moulding"),
+                    is_material_only=result.is_material_only,
+                    geometry=None if result.is_material_only else constraints.get("geometry"),
+                    manufacturing_process=None if result.is_material_only else constraints.get("manufacturing_process"),
                     material_source="Pending"
                 )
-            )
+            ]
 
         bom = []
 

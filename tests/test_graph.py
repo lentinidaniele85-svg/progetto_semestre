@@ -61,17 +61,17 @@ _FAKE_MATERIAL_RESPONSE = MaterialIdeationResponse(
         ComponentAlternatives(
             component_name="legs",
             alternatives=[
-                MaterialAlternative(name="recycled steel",   justification="Lower carbon than virgin steel.", aesthetic_match=0.9, structural_match=0.95, estimated_cost_change="Same"),
-                MaterialAlternative(name="aluminum",         justification="Lighter with good strength.",     aesthetic_match=0.8, structural_match=0.85, estimated_cost_change="More Expensive"),
-                MaterialAlternative(name="bamboo composite", justification="Natural, renewable option.",      aesthetic_match=0.7, structural_match=0.65, estimated_cost_change="Cheaper"),
+                MaterialAlternative(name="recycled steel",   base_material="steel",    justification="Lower carbon than virgin steel.", aesthetic_match=0.9, structural_match=0.95, estimated_cost_change="Same"),
+                MaterialAlternative(name="aluminum",         base_material="aluminum", justification="Lighter with good strength.",     aesthetic_match=0.8, structural_match=0.85, estimated_cost_change="More Expensive"),
+                MaterialAlternative(name="bamboo composite", base_material="bamboo",   justification="Natural, renewable option.",      aesthetic_match=0.7, structural_match=0.65, estimated_cost_change="Cheaper"),
             ],
         ),
         ComponentAlternatives(
             component_name="armrests",
             alternatives=[
-                MaterialAlternative(name="wood",             justification="Warm feel, renewable.",           aesthetic_match=0.85, structural_match=0.70, estimated_cost_change="Same"),
-                MaterialAlternative(name="recycled plastic", justification="Lower-impact circular option.",   aesthetic_match=0.80, structural_match=0.80, estimated_cost_change="Cheaper"),
-                MaterialAlternative(name="hemp composite",   justification="Bio-based, low carbon.",          aesthetic_match=0.65, structural_match=0.60, estimated_cost_change="Same"),
+                MaterialAlternative(name="wood",             base_material="wood",             justification="Warm feel, renewable.",           aesthetic_match=0.85, structural_match=0.70, estimated_cost_change="Same"),
+                MaterialAlternative(name="recycled plastic", base_material="plastic",          justification="Lower-impact circular option.",   aesthetic_match=0.80, structural_match=0.80, estimated_cost_change="Cheaper"),
+                MaterialAlternative(name="hemp composite",   base_material="hemp",             justification="Bio-based, low carbon.",          aesthetic_match=0.65, structural_match=0.60, estimated_cost_change="Same"),
             ],
         ),
     ]

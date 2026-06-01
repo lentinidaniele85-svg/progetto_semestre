@@ -195,25 +195,39 @@ async def lca_validator(state: AgentState) -> dict:
             mass_kg = orig_comp.get("weight_kg", 1.0)
             is_recycled_comp = orig_comp.get("is_recycled", False)
             
-            GEOMETRY_TO_PROCESS = {
-                "Corpi Cavi": "Blow moulding",
-                "Pezzi Pieni Complessi": "Injection moulding",
-                "Film": "Film extrusion",
-                "Profili/Tubi": "Tube extrusion"
-            }
-            process_name = GEOMETRY_TO_PROCESS.get(orig_comp.get("geometry"), "Injection moulding").lower()
+            is_mat_only = orig_comp.get("is_material_only", False)
+            mfg_proc_field = orig_comp.get("manufacturing_process")
+            geom_field = orig_comp.get("geometry")
 
-            task_type = (state.get("constraints") or {}).get("task_type", "optimization")
-            
-            # --- Ricerca Dinamica Processo ---
-            proc_query = f"{original_material} {process_name}"
-            proc_match = await provider.find_closest_match(label=proc_query, location=geography, has_transport=False)
-            if proc_match and proc_match.get("environmental_impact") is not None:
-                process_impact = proc_match["environmental_impact"]
-                thought_log.append(f"[LCA Validation] Processo '{proc_query}' associato al record: {proc_match.get('providerName', '?')}")
+            if is_mat_only or mfg_proc_field is None or geom_field is None or mfg_proc_field.lower() == "none" or geom_field.lower() == "none":
+                process_impact = 0.0
+                process_name = "none"
+                thought_log.append(f"[GATE] {component_name}: is_material_only={is_mat_only} (mfg_proc={mfg_proc_field}, geom={geom_field}) → process_impact=0.0 (gate condizionale superato)")
             else:
-                process_impact = PROCESS_IMPACTS.get(process_name, PROCESS_IMPACTS.get(process_name.capitalize(), 1.0))
-                thought_log.append(f"[LCA Validation] Processo '{proc_query}' non trovato, uso default hardcoded.")
+                GEOMETRY_TO_PROCESS = {
+                    "Corpi Cavi": "Blow moulding",
+                    "Pezzi Pieni Complessi": "Injection moulding",
+                    "Film": "Film extrusion",
+                    "Profili/Tubi": "Tube extrusion"
+                }
+                process_name = GEOMETRY_TO_PROCESS.get(orig_comp.get("geometry"), "Injection moulding").lower()
+
+                task_type = (state.get("constraints") or {}).get("task_type", "optimization")
+                
+                # --- Ricerca Dinamica Processo ---
+                proc_query = f"{original_material} {process_name}"
+                proc_match = await provider.find_closest_match(
+                    label=proc_query,
+                    location=geography,
+                    has_transport=False,
+                    entity_type="process"
+                )
+                if proc_match and proc_match.get("environmental_impact") is not None:
+                    process_impact = proc_match["environmental_impact"]
+                    thought_log.append(f"[LCA Validation] Processo '{proc_query}' associato al record: {proc_match.get('providerName', '?')}")
+                else:
+                    process_impact = PROCESS_IMPACTS.get(process_name, PROCESS_IMPACTS.get(process_name.capitalize(), 1.0))
+                    thought_log.append(f"[LCA Validation] Processo '{proc_query}' non trovato, uso default hardcoded.")
             
             # Impatto materiale originale
             thought_log.append(f"Termine tradotto: {original_material}")
@@ -315,9 +329,10 @@ async def lca_validator(state: AgentState) -> dict:
             for alt in component_alts.get("alternatives", []):
                 alt_name = alt["name"]
                 is_recycled_alt = alt.get("is_recycled", False)
-                thought_log.append(f"Termine tradotto: {alt_name}")
+                base_mat_alt = alt.get("base_material", alt_name)
+                thought_log.append(f"Termine tradotto: {base_mat_alt} (display: {alt_name})")
                 alt_match = await provider.find_closest_match(
-                    target_product=alt_name,
+                    target_product=base_mat_alt,
                     target_geography=geography,
                     task_type=task_type,
                     thought_log=thought_log,
@@ -420,6 +435,8 @@ async def lca_validator(state: AgentState) -> dict:
                 })
             else:
                 orig_scores_mat["environmental_impact"] = mat_total_impact + proc_total_impact
+                orig_scores_mat["process_unit_impact"] = process_impact
+                orig_scores_mat["process_total_impact"] = proc_total_impact
                 lca_results.append({
                     "component_name": component_name,
                     "original_material": original_material,

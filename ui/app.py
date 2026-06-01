@@ -609,29 +609,81 @@ with right_col:
                     "material":        "Material",
                     "weight_kg":       "Weight (kg)",
                     "functional_role": "Functional Role",
-                    "baseline_environmental_impact": f"Impact ({settings.environmental_impact_unit}/kg)",
+                    "unit_impact":     "Impatto Unitario (kg CO₂-eq/kg)",
+                    "total_impact":    "Impatto Totale (kg CO₂-eq)",
                     "baseline_cost":   "Cost Tier",
                     "lifespan_years":  "Lifespan (yr)",
                 }
                 task_type = state.get("constraints", {}).get("task_type", "optimization")
+                
+                lca_results = state.get("lca_results") or []
+                lca_lookup = {}
+                for r in lca_results:
+                    comp_name = r.get("component_name", "")
+                    scores = r.get("original_scores", {})
+                    lca_lookup[comp_name] = {
+                        "unit_material_impact": scores.get("unit_material_impact", 0.0),
+                        "environmental_impact": scores.get("environmental_impact", 0.0),
+                        "process_unit_impact": scores.get("process_unit_impact", 0.0),
+                        "process_total_impact": scores.get("process_total_impact", 0.0),
+                    }
+                
                 display_bom = []
                 for item in bom:
+                    comp_name = item.get("name", "")
+                    weight = item.get("weight_kg", 0.0)
+                    
+                    # Material row
                     mat_row = item.copy()
-                    mat_row["name"] = f"{item.get('name', '')} (Material)"
+                    mat_row["name"] = f"{comp_name} (Material)"
+                    
+                    # Read from lca_lookup if available
+                    if lca_lookup:
+                        model_key = f"{comp_name} (Material)"
+                        if model_key in lca_lookup:
+                            mat_unit = lca_lookup[model_key]["unit_material_impact"]
+                            mat_total = lca_lookup[model_key]["environmental_impact"]
+                        else:
+                            opt_data = lca_lookup.get(comp_name, {})
+                            mat_unit = opt_data.get("unit_material_impact", item.get("unit_impact_value", 0.0))
+                            mat_total = mat_unit * weight
+                    else:
+                        mat_unit = item.get("unit_impact_value", 0.0)
+                        mat_total = mat_unit * weight
+                        
+                    mat_row["unit_impact"] = mat_unit
+                    mat_row["total_impact"] = mat_total
                     display_bom.append(mat_row)
                     
+                    # Manufacturing row
                     proc = item.get("manufacturing_process")
                     if proc:
                         proc_row = item.copy()
-                        proc_row["name"] = f"{item.get('name', '')} (Manufacturing)"
+                        proc_row["name"] = f"{comp_name} (Manufacturing)"
                         proc_row["material"] = proc
                         proc_row["functional_role"] = "Processing"
-                        from core.config import PROCESS_IMPACTS
-                        proc_row["baseline_environmental_impact"] = PROCESS_IMPACTS.get(proc, 1.0)
                         proc_row["baseline_cost"] = 0.0
+                        
+                        if lca_lookup:
+                            model_key = f"{comp_name} (Manufacturing)"
+                            if model_key in lca_lookup:
+                                proc_unit = lca_lookup[model_key]["unit_material_impact"]
+                                proc_total = lca_lookup[model_key]["environmental_impact"]
+                            else:
+                                opt_data = lca_lookup.get(comp_name, {})
+                                from core.config import PROCESS_IMPACTS
+                                proc_unit = opt_data.get("process_unit_impact", PROCESS_IMPACTS.get(proc, 1.0))
+                                proc_total = opt_data.get("process_total_impact", proc_unit * weight)
+                        else:
+                            from core.config import PROCESS_IMPACTS
+                            proc_unit = PROCESS_IMPACTS.get(proc, 1.0)
+                            proc_total = proc_unit * weight
+                            
+                        proc_row["unit_impact"] = proc_unit
+                        proc_row["total_impact"] = proc_total
                         display_bom.append(proc_row)
                 
-                transport_comp = next((c for c in state.get("lca_results", []) if c.get("component_name") == "Transport"), None)
+                transport_comp = next((c for c in lca_results if c.get("component_name") == "Transport"), None)
                 if transport_comp:
                     t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
                     mat_name = transport_comp.get("original_material", f"{t_mode.capitalize()} transport")
@@ -645,7 +697,8 @@ with right_col:
                         "material": mat_name,
                         "weight_kg": "-",
                         "functional_role": "Logistics",
-                        "baseline_environmental_impact": impact,
+                        "unit_impact": "-",
+                        "total_impact": impact,
                         "baseline_cost": 0.0,
                         "lifespan_years": "-",
                     })
@@ -659,16 +712,24 @@ with right_col:
                             "material": f"{t_mode.capitalize()} transport ({dist} km)",
                             "weight_kg": "-",
                             "functional_role": "Logistics",
-                            "baseline_environmental_impact": TRANSPORT_IMPACT_PER_TKM,
+                            "unit_impact": TRANSPORT_IMPACT_PER_TKM,
+                            "total_impact": "-",
                             "baseline_cost": 0.0,
                             "lifespan_years": "-",
                         })
                         
                 bom_df = pd.DataFrame(display_bom)
                 bom_df = bom_df.rename(columns={k: v for k, v in _col_map.items() if k in bom_df.columns})
+                
+                # Format float columns nicely to 4 decimal places
+                for col in ["Impatto Unitario (kg CO₂-eq/kg)", "Impatto Totale (kg CO₂-eq)"]:
+                    if col in bom_df.columns:
+                        bom_df[col] = bom_df[col].apply(lambda x: f"{x:.4f}" if isinstance(x, (int, float)) else str(x))
+                        
                 if "Weight (kg)" in bom_df.columns:
                     bom_df["Weight (kg)"] = bom_df["Weight (kg)"].astype(str)
                 if "Lifespan (yr)" in bom_df.columns:
+                    bom_df["Lifespan (yr)"].fillna("-", inplace=True)
                     bom_df["Lifespan (yr)"] = bom_df["Lifespan (yr)"].astype(str)
                 _display_cols = [v for k, v in _col_map.items() if v in bom_df.columns]
                 st.dataframe(bom_df[_display_cols], width="stretch", hide_index=True)
