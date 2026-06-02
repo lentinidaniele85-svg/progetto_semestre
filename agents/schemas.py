@@ -1,6 +1,6 @@
 import re
 from typing import List, Optional, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator  # pyrefly: ignore [missing-import]
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +162,7 @@ class BOMComponent(BaseModel):
     name: str
     material: str = Field(description="Strictly the English name of the raw material (e.g. 'polypropylene', 'steel'). Do NOT include geography, weight, or context.")
     weight_kg: float = Field(default=1.0, gt=0.0)
+    db_index: Optional[str] = Field(default=None, description="Ecoinvent raw row UUID for strict referential integrity.")
     functional_role: Optional[str] = Field(
         default=None,
         description="The structural or functional purpose of this component (e.g. 'load-bearing frame', 'aesthetic casing', 'cushioning layer').",

@@ -1,9 +1,10 @@
 import json
+import re
 from typing import Optional
 import logging
 # pyrefly: ignore [missing-import]
-from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from langchain_core.messages import HumanMessage, SystemMessage  # pyrefly: ignore [missing-import]
+from pydantic import BaseModel, Field  # pyrefly: ignore [missing-import]
 from agents.state import AgentState
 from core.llm_factory import ModelFactory
 from data.provider_factory import get_lca_provider
@@ -42,6 +43,13 @@ _MASS_ESTIMATOR_SYSTEM_PROMPT = (
     "del settore pertinente.\n"
     "4) Restituisci SEMPRE mass_kg > 0 e spiega brevemente il ragionamento in 'reasoning'.\n"
     "5) ATTENZIONE: Il campo `mass_kg` dello schema MassEstimation deve essere espresso rigorosamente in CHILOGRAMMI (kg). Se l'oggetto analizzato pesa meno di un chilo (es. grammi), devi effettuare la conversione in frazioni decimali. Esempio: se una racchetta da padel pesa 360 grammi, devi restituire 0.36, NON 360.0. Non confondere mai i grammi con i chilogrammi.\n"
+    "6) REGOLA DI COERENZA NUMERICA (OBBLIGATORIA): Quando nel campo 'reasoning' dichiari un range "
+    "numerico di mercato per un oggetto (es. 'i microchip pesano tipicamente da 1 a 10 grammi'), il "
+    "valore finale scelto per mass_kg DEVE tassonomicamente e matematicamente cadere ALL'INTERNO di "
+    "quel range. È VIETATO affermare un range e poi selezionare un valore al di fuori di esso "
+    "(es. dichiarare range 1-10g e poi scegliere 25g). Se il valore preferito supera il range "
+    "dichiarato, riformula il range per includere il valore oppure scegli un valore coerente con "
+    "il range originale. Nessuna contraddizione testuale tra limiti del range e valore scelto.\n"
     "NON chiedere all'utente chiarimenti. Scegli la stima più plausibile e procedi."
 )
 
@@ -342,14 +350,13 @@ def _classify_material(material: str) -> Optional[str]:
     Returns:
         Stringa della classe materiale (es. "thermoplastic"), o None se sconosciuto.
     """
-    import re as _re
     mat_lower = material.lower().strip()
     for mat_class, keywords in _MATERIAL_CLASS_MAP.items():
         for kw in keywords:
             if kw.startswith("WB:"):
                 # Word-boundary match per acronimi corti
                 acronym = kw[3:]
-                if _re.search(r"\b" + _re.escape(acronym) + r"\b", mat_lower):
+                if re.search(r"\b" + re.escape(acronym) + r"\b", mat_lower):
                     return mat_class
             else:
                 if kw in mat_lower:
@@ -688,7 +695,7 @@ ALWAYS ensure:
         
         if mass is not None and mass > 0 and num_comps > 0:
             if total_llm_weight > 0:
-                if abs(total_llm_weight - mass) > 0.01:
+                if abs(total_llm_weight - mass) > (0.001 * mass):
                     scale_factor = mass / total_llm_weight
                     thought_log.append(f"Ricalcolo proporzionale pesi componenti per farli coincidere con la massa totale ({mass:.2f} kg).")
             else:
@@ -718,7 +725,6 @@ ALWAYS ensure:
                 comp["weight_kg"] = round(comp["weight_kg"] * scale_factor, 4)
 
             mat = comp.get("material", "unknown")
-            import re
             mat = re.sub(r'\s*\([^)]*\)', '', mat)
             mat = normalize_text(mat)
             comp["material"] = mat
@@ -794,8 +800,8 @@ ALWAYS ensure:
                 val_co2 = best_match.get("environmental_impact", "?")
                 thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
 
-                comp["material_source"] = best_match["flowName"]
                 comp["unit_impact_value"] = best_match["environmental_impact"]
+                comp["db_index"] = best_match.get("id")
 
             # DIRETTIVA 3: Process Mapper — Material-First con Fallback sul Nome
             # 1. Priorità assoluta al materiale.
@@ -878,7 +884,7 @@ ALWAYS ensure:
         dist_km = dist_km or 0.0
         log_type = "stimati o assunti" if result.distance_km is None else "dichiarati dall'utente"
         thought_log.append(
-            f"Calcolo logistico: {mass:.2f} kg × {dist_km:.0f} km "
+            f"Calcolo logistico: {mass:.4f} kg × {dist_km:.0f} km "
             f"= {(mass/1000.0*dist_km):.4f} tkm "
             f"({log_type})."
         )

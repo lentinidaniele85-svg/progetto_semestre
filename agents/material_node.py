@@ -1,6 +1,6 @@
 import json
 import logging
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage  # pyrefly: ignore [missing-import]
 from agents.state import AgentState
 from core.llm_factory import ModelFactory
 from agents.schemas import MaterialIdeationResponse

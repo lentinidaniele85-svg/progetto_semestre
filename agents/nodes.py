@@ -1,7 +1,8 @@
 import json
 import logging
+import re
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage  # pyrefly: ignore [missing-import]
 
 from agents.schemas import ConstraintsExtract
 from agents.state import AgentState
@@ -173,6 +174,11 @@ async def lca_validator(state: AgentState) -> dict:
         lca_results: list[dict] = []
         assumptions = list(state.get("assumptions_list", []))
 
+        # TICKET 1 FIX: Estrai task_type in modo incondizionato all'inizio
+        # della funzione per evitare UnboundLocalError se nessun ramo interno
+        # (else di is_mat_only) viene mai eseguito.
+        task_type = state.get("constraints", {}).get("task_type", "modeling")
+
         constraints = state.get("constraints") or {}
         logistics = state.get("logistics_data", {})
         dist_km = constraints.get("distance_km")
@@ -204,18 +210,26 @@ async def lca_validator(state: AgentState) -> dict:
                 process_name = "none"
                 thought_log.append(f"[GATE] {component_name}: is_material_only={is_mat_only} (mfg_proc={mfg_proc_field}, geom={geom_field}) → process_impact=0.0 (gate condizionale superato)")
             else:
+                # HF3: Usa il campo manufacturing_process del componente BOM come query primaria.
+                # Questo campo è impostato dal ProcessMapper (workflow_node.py) con stringhe
+                # precise come "electronic component production, wafer fabrication".
+                # La GEOMETRY_TO_PROCESS è mantenuta solo come fallback display, non come
+                # fonte della query DB (eliminando il pattern "silicon injection moulding").
                 GEOMETRY_TO_PROCESS = {
                     "Corpi Cavi": "Blow moulding",
                     "Pezzi Pieni Complessi": "Injection moulding",
                     "Film": "Film extrusion",
                     "Profili/Tubi": "Tube extrusion"
                 }
-                process_name = GEOMETRY_TO_PROCESS.get(orig_comp.get("geometry"), "Injection moulding").lower()
+                # process_name: label display (per thought log e fallback PROCESS_IMPACTS)
+                process_name = mfg_proc_field if mfg_proc_field else GEOMETRY_TO_PROCESS.get(orig_comp.get("geometry"), "Injection moulding").lower()
 
                 task_type = (state.get("constraints") or {}).get("task_type", "optimization")
                 
                 # --- Ricerca Dinamica Processo ---
-                proc_query = f"{original_material} {process_name}"
+                # HF3: La query al DB usa il processo BOM reale (es. "electronic component
+                # production, wafer fabrication"), NON il prodotto [materiale + geometria] hardcoded.
+                proc_query = mfg_proc_field if mfg_proc_field else f"{original_material} {process_name}"
                 proc_match = await provider.find_closest_match(
                     label=proc_query,
                     location=geography,
@@ -226,18 +240,34 @@ async def lca_validator(state: AgentState) -> dict:
                     process_impact = proc_match["environmental_impact"]
                     thought_log.append(f"[LCA Validation] Processo '{proc_query}' associato al record: {proc_match.get('providerName', '?')}")
                 else:
-                    process_impact = PROCESS_IMPACTS.get(process_name, PROCESS_IMPACTS.get(process_name.capitalize(), 1.0))
-                    thought_log.append(f"[LCA Validation] Processo '{proc_query}' non trovato, uso default hardcoded.")
+                    _fallback_key = process_name.lower()
+                    process_impact = PROCESS_IMPACTS.get(_fallback_key, PROCESS_IMPACTS.get(_fallback_key.capitalize(), 1.0))
+                    if process_impact == 1.0 and _fallback_key not in PROCESS_IMPACTS and _fallback_key.capitalize() not in PROCESS_IMPACTS:
+                        thought_log.append(f"[WARNING] Processo non mappato ('{_fallback_key}'), applicato default generico 1.0")
+                    else:
+                        thought_log.append(f"[LCA Validation] Processo '{proc_query}' non trovato nel DB, uso default hardcoded ({_fallback_key}).")
             
             # Impatto materiale originale
-            thought_log.append(f"Termine tradotto: {original_material}")
-            orig_match = await provider.find_closest_match(
-                target_product=original_material,
-                target_geography=geography,
-                task_type=task_type,
-                thought_log=thought_log,
-                is_recycled=is_recycled_comp,
-            )
+            db_index = orig_comp.get("db_index")
+            orig_match = None
+            if db_index is not None:
+                thought_log.append(f"Utilizzo record DB precedentemente selezionato (ID: {db_index}) per integrità referenziale.")
+                orig_match_score = await provider.get_impact_scores(db_index)
+                if orig_match_score is not None:
+                    orig_match = orig_match_score
+                    # Mock fields expected by downstream
+                    orig_match["exact_match_found"] = True
+                    orig_match["geo_level_used"] = "exact (ID match)"
+
+            if orig_match is None:
+                thought_log.append(f"Termine tradotto: {original_material}")
+                orig_match = await provider.find_closest_match(
+                    target_product=original_material,
+                    target_geography=geography,
+                    task_type=task_type,
+                    thought_log=thought_log,
+                    is_recycled=is_recycled_comp,
+                )
 
             if not orig_match or orig_match.get("environmental_impact") is None:
                 # ── STRICT MODE — MATERIALE ORIGINALE NON TROVATO ───────────
@@ -641,7 +671,6 @@ def mcda_scorer(state: AgentState) -> dict:
 # e aggiorna state['bom'] o state['constraints'].
 # ---------------------------------------------------------------------------
 
-import re
 
 def _clean_token(text: str) -> str:
     """Rimuove punteggiatura finale e normalizza."""

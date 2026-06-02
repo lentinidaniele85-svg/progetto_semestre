@@ -19,7 +19,7 @@ import uuid
 
 import pandas as pd
 import streamlit as st
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.memory import MemorySaver  # pyrefly: ignore [missing-import]
 
 from agents.graph import build_graph
 from reports.generator import generate_html_report, generate_pdf_report
@@ -729,7 +729,7 @@ with right_col:
                 if "Weight (kg)" in bom_df.columns:
                     bom_df["Weight (kg)"] = bom_df["Weight (kg)"].astype(str)
                 if "Lifespan (yr)" in bom_df.columns:
-                    bom_df["Lifespan (yr)"].fillna("-", inplace=True)
+                    bom_df["Lifespan (yr)"] = bom_df["Lifespan (yr)"].fillna("-")
                     bom_df["Lifespan (yr)"] = bom_df["Lifespan (yr)"].astype(str)
                 _display_cols = [v for k, v in _col_map.items() if v in bom_df.columns]
                 st.dataframe(bom_df[_display_cols], width="stretch", hide_index=True)
@@ -743,10 +743,26 @@ with right_col:
             if lca_results and not mcda_scores:
                 st.subheader("🔬 Material Alternatives (LCA Validated)")
                 for comp in lca_results:
-                    with st.expander(
-                        f"**{comp['component_name']}** — original: {comp['original_material']} "
-                        f"({comp['original_scores']['environmental_impact']:.3f} {settings.environmental_impact_unit})"
-                    ):
+                    comp_name = comp['component_name']
+                    orig_mat  = comp['original_material']
+                    impact    = comp['original_scores']['environmental_impact']
+
+                    # HF2: Determina etichetta header senza stringhe statiche.
+                    # Per le righe "(Manufacturing)", original_material contiene il processo
+                    # reale impostato dal ProcessMapper (es. "electronic component production,
+                    # wafer fabrication"), NON una stringa hardcoded.
+                    if comp_name.endswith("(Manufacturing)"):
+                        header_icon = "⚙️"
+                        # original_material qui è già la stringa di processo reale
+                        header_label = f"{header_icon} **{comp_name}** — process: *{orig_mat}* ({impact:.4f} {settings.environmental_impact_unit})"
+                    elif comp_name == "Transport":
+                        header_icon = "🚚"
+                        header_label = f"{header_icon} **{comp_name}** — {orig_mat} ({impact:.4f} {settings.environmental_impact_unit})"
+                    else:
+                        header_icon = "🧱"
+                        header_label = f"{header_icon} **{comp_name}** — material: *{orig_mat}* ({impact:.4f} {settings.environmental_impact_unit})"
+
+                    with st.expander(header_label):
                         if task_type == "modeling":
                             st.info("Nessuna alternativa cercata in modalità Modeling. Per confrontare diversi materiali e ricevere suggerimenti di miglioramento automatici, utilizza la modalità Optimization.")
                         else:
@@ -762,6 +778,7 @@ with right_col:
                                 })
                             if rows:
                                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
 
         # ── LCA Chart + MCDA Table (phase >= mcda) ───────────────────────
         if _phase_gte(phase, "mcda"):

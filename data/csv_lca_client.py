@@ -1,8 +1,10 @@
 from pathlib import Path
 import difflib
+import re
 from typing import List, Optional, Tuple
-import pandas as pd
-from pydantic import BaseModel
+import pandas as pd  # pyrefly: ignore [missing-import]
+from pydantic import BaseModel  # pyrefly: ignore [missing-import]
+from langchain_core.messages import SystemMessage as _SM, HumanMessage as _HM  # pyrefly: ignore [missing-import]
 
 from data.lca_interface import LCADataProvider
 
@@ -323,8 +325,6 @@ class SemanticNormalizer:
     come base_material (comportamento "safe" — non inventa nulla).
     """
 
-    import re as _re_module
-
     def normalize(self, raw_input: str) -> NormalizationResult:
         """Esegue la pipeline completa su raw_input.
 
@@ -334,7 +334,6 @@ class SemanticNormalizer:
         Returns:
             NormalizationResult con base_material, geometry_hint, ecc.
         """
-        import re
 
         text = raw_input.strip()
         stripped_tokens: list[str] = []
@@ -494,13 +493,12 @@ def _expand_semantic_terms(label: str) -> List[str]:
     - Chiavi lunghe (> 4 caratteri, es. 'acciaio', 'polipropilene'): substring.
       Meno ambigue per definizione.
     """
-    import re as _re
     base_term = label.strip().lower()
     expanded = [base_term]
     for key, synonyms in _SEMANTIC_SYNONYMS.items():
         if len(key) <= 4:
             # Word-boundary match per acronimi corti: evita 'pet' in 'petroleum'
-            if _re.search(r"\b" + _re.escape(key) + r"\b", base_term):
+            if re.search(r"\b" + re.escape(key) + r"\b", base_term):
                 expanded.extend(synonyms)
         else:
             # Substring match per termini lunghi (retrocompatibile)
@@ -599,8 +597,7 @@ async def generate_search_queries(material_name: str, entity_type: str = "materi
         return _llm_expansion_cache[cache_key]
 
     try:
-        from core.llm_factory import ModelFactory
-        from langchain_core.messages import SystemMessage as _SM, HumanMessage as _HM
+        from core.llm_factory import ModelFactory  # pyrefly: ignore [missing-import]
 
         llm = ModelFactory.get_model()
         chain = llm.with_structured_output(SearchQueryList)
@@ -898,7 +895,6 @@ class CSVLcaClient(LCADataProvider):
             return None
 
         # Clean actual_label to remove acronyms in parentheses like "(rEPS)" or "(rPP)"
-        import re
         actual_label = re.sub(r"\s*\([^)]*\)", "", actual_label).strip()
         # NOTE: is_recycled parameter is the sole source of truth for recycled detection.
         # We do NOT infer recycled intent from label text-scan — that caused false positives.
@@ -1095,8 +1091,6 @@ class CSVLcaClient(LCADataProvider):
             impact = float(row["climatechangeimpact"])
             name_combined = f"{out_name} {proc_name}"
             
-            import re
-            
             # ── TICKET 3: Boolean Gating Stretto (Nessuna inferenza testuale) ──────────
             # is_recycled proviene dal campo Pydantic BOMComponent — unica fonte di verità.
             # Nessun text-scan su original_label: elimina falsi positivi.
@@ -1145,7 +1139,6 @@ class CSVLcaClient(LCADataProvider):
             primary_term = search_terms[0].lower()
             
             # Helper to check if a term matches a string with word boundaries
-            import re as _re_match
             def has_word_boundary_match(term: str, target: str) -> bool:
                 if len(term) <= 3:
                     # usa word-boundary match per stringhe <= 3 caratteri come "PP" o "PE"
@@ -1308,6 +1301,59 @@ class CSVLcaClient(LCADataProvider):
                         f"(+0.25, segnali estrattivi in contesto estrazione)"
                     )
             # "generic": nessuna modifica — comportamento attuale invariato
+
+            # ── HF1 + TICKET 2: Domain Blacklisting Esteso (Filtro Esclusione Semantica Incrociata) ──
+            # Penalizza i record metallurgici pesanti quando la query riguarda un dominio
+            # elettronico/semiconduttori. Il trigger ha DUE livelli:
+            #
+            # LIVELLO A — label diretta: microchip, wafer, semiconductor... nel nome originale
+            # LIVELLO B — silicon cross-check: se 'silicon' appare tra i search_terms (generati
+            #             dall'LLM per materiale come 'silicon') E il record è ferrosilicio o
+            #             metallurgico, applicare il malus. Questo cattura il caso reale in cui
+            #             l'LLM espande 'silicon' → ['silicon metal','silicon powder'] e il DB
+            #             restituisce 'ferrosilicon production' come false-positive.
+            _ELECTRONICS_SIGNALS: frozenset = frozenset({
+                "microchip", "micro chip", "semiconductor", "semiconductore", "wafer",
+                "electronic", "electronics", "elettronico", "elettronica",
+                "integrated circuit", "circuito integrato", "cpu", "gpu", "chip",
+                "pcb", "printed circuit", "transistor", "diode", "diodo",
+                "mosfet", "fpga", "asic", "soc", "microprocessor", "microprocessore",
+                "nanometer", "lithography", "photolithography",
+            })
+            _METALLURGY_BLACKLIST: frozenset = frozenset({
+                "ferrosilicon", "ferro-silicon", "ferro silicon",
+                "ferroalloy", "ferro alloy", "ferroalloys",
+                "metallurg", "blast furnace", "electric arc furnace",
+                "pig iron", "ghisa", "cast iron production",
+                "smelting", "alloy steel production",
+                "heavy industry", "siderurgy", "siderurgic",
+            })
+            _original_label_lower = original_label.lower()
+
+            # LIVELLO A: keyword elettroniche esplicite nel nome componente
+            _is_electronics_query = any(sig in _original_label_lower for sig in _ELECTRONICS_SIGNALS)
+
+            # LIVELLO B: 'silicon' nei search_terms espansi + record è ferrosilicio/metallurgico
+            # Cattura il pattern: componente="silicon" → LLM genera ['silicon metal','silicon powder']
+            # → DB restituisce 'ferrosilicon production' come false-positive per matching su 'silicon'
+            _silicon_in_search_terms = any("silicon" in t.lower() for t in search_terms)
+            _is_metallurgical_record = any(bk in name_combined for bk in _METALLURGY_BLACKLIST)
+
+            if _is_electronics_query and _is_metallurgical_record:
+                score -= 0.8
+                print(
+                    f"[DOMAIN BLACKLIST LvA] Penalizzato '{row['outputname']}' "
+                    f"(-0.8, record metallurgico su query elettronica diretta)"
+                )
+            elif _silicon_in_search_terms and _is_metallurgical_record:
+                # Livello B: penalità più moderata — potrebbe essere ricerca legittima
+                # di ferrosilicio in contesti di raffinazione, ma privilegia il silicio puro
+                score -= 0.8
+                print(
+                    f"[DOMAIN BLACKLIST LvB] Penalizzato '{row['outputname']}' "
+                    f"(-0.8, 'silicon' nei search_terms ma record è ferrosilicio/metallurgico)"
+                )
+            # ── Fine HF1 + TICKET 2 ────────────────────────────────────────────────────────────────
 
             if score > best_score:
                 best_score = score

@@ -1,5 +1,5 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict  # pyrefly: ignore [missing-import]
+from pydantic import Field, model_validator  # pyrefly: ignore [missing-import]
 from typing import Literal
 
 
@@ -70,6 +70,7 @@ PROCESS_IMPACTS: dict[str, float] = {
     "Textile weaving": 0.8,
     "Glass production": 1.4,
     "Ceramic firing": 1.6,
+    "electronic component production, wafer fabrication": 1.2000,
 }
 
 # Impatto trasporto [kg CO₂ eq / (tonnellata · km)]
