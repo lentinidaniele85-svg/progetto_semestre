@@ -17,14 +17,17 @@ class ModelFactory:
     """Crea e cacha il client LLM OpenRouter."""
 
     @staticmethod
-    def get_model() -> BaseChatModel:
-        cache_key = f"{settings.llm_provider}:{settings.openrouter_model}"
+    def get_model(max_tokens: int | None = None) -> BaseChatModel:
+        cache_key = f"{settings.llm_provider}:{settings.openrouter_model}:{max_tokens}"
         if cache_key not in _model_cache:
-            _model_cache[cache_key] = ChatOpenAI(
-                model=settings.openrouter_model,
-                openai_api_key=settings.openrouter_api_key,
-                base_url=OPENROUTER_BASE_URL,
-            )
+            kwargs = {
+                "model": settings.openrouter_model,
+                "openai_api_key": settings.openrouter_api_key,
+                "base_url": OPENROUTER_BASE_URL,
+            }
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            _model_cache[cache_key] = ChatOpenAI(**kwargs)
         return _model_cache[cache_key]
 
     @staticmethod

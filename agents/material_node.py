@@ -13,7 +13,7 @@ async def material_ideator(state: AgentState) -> dict:
     thought_log = list(state.get("thought_log", []))
     thought_log.append("Esecuzione Material Ideator (Selezione Alternative Sostenibili)...")
 
-    llm = ModelFactory.get_model()
+    llm = ModelFactory.get_model(max_tokens=4000)
     constraints = dict(state.get("constraints", {}))
     
     def map_geo(g):
@@ -68,12 +68,13 @@ Specifically for Carbon Fiber, ALWAYS use the exact string "Reinforced carbon fi
 
     except Exception as exc:
         logger.error(f"Material Ideation failed: {exc}")
-        thought_log.append(f"⚠ Errore di connessione o ideazione ({exc}).")
+        # Ticket 3: Prevent infinite context accumulation on retry by reverting state
+        original_thought_log = list(state.get("thought_log", []))
         
         # User requested explicitly NOT to fallback to generic errors
         return {
             "pending_feedback": "Non posso procedere perché si è verificato un timeout o errore di connessione col modello durante la scelta dei materiali. Vuoi riprovare?",
-            "thought_log": thought_log,
+            "thought_log": original_thought_log,
             "current_phase": "error",
             "error_message": str(exc)
         }

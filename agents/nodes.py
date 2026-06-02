@@ -92,7 +92,7 @@ def constraint_extractor(state: AgentState) -> dict:
     else:
         thought_log.append("Extracting constraints from user input...")
 
-    llm = ModelFactory.get_model()
+    llm = ModelFactory.get_model(max_tokens=500)
     chain = llm.with_structured_output(ConstraintsExtract)
 
     messages = [
@@ -708,7 +708,7 @@ async def human_feedback_processor(state: AgentState) -> dict:
             thought_log.append(f"Interview response received. Extracting missing constraints...")
             
             # --- INGESTIONE ATTIVA DEI CONSTRAINTS ---
-            llm = ModelFactory.get_model()
+            llm = ModelFactory.get_model(max_tokens=500)
             chain = llm.with_structured_output(ConstraintsExtract)
             
             messages = [
@@ -758,7 +758,7 @@ async def human_feedback_processor(state: AgentState) -> dict:
 
         thought_log.append(f"Applying user feedback: \"{feedback}\"")
 
-        llm = ModelFactory.get_model()
+        llm = ModelFactory.get_model(max_tokens=1000)
 
         system_msg = (
             "You are a product design assistant helping refine a Bill of Materials (BOM) "

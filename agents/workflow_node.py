@@ -65,7 +65,7 @@ async def _estimate_mass_with_llm(user_input: str, llm=None) -> tuple[float, str
     _log = logging.getLogger(__name__)
     try:
         if llm is None:
-            llm = ModelFactory.get_model()
+            llm = ModelFactory.get_model(max_tokens=500)
         chain = llm.with_structured_output(MassEstimation)
         result: MassEstimation = await asyncio.to_thread(
             chain.invoke,
@@ -467,7 +467,7 @@ async def workflow_bom_ideator(state: AgentState) -> dict:
     )
 
     # T05: Step 2 — Lookup Aggregato
-    llm = ModelFactory.get_model()
+    llm = ModelFactory.get_model(max_tokens=4000)
     constraints = dict(state.get("constraints", {}))
     
     def map_geo(g):
@@ -937,15 +937,14 @@ ALWAYS ensure:
 
     except Exception as exc:
         logger.error(f"Workflow Ideation fallito: {exc}")
-        if ita:
-            thought_log.append(f"⚠ Errore durante l'analisi ({exc}).")
-        else:
-            thought_log.append(f"⚠ Error during analysis ({exc}).")
+        # Ticket 3: Prevent infinite context accumulation on retry by reverting state
+        original_thought_log = list(state.get("thought_log", []))
+        original_assumptions = list(state.get("assumptions_list", []))
 
         return {
             "pending_feedback": "An error occurred during analysis. Please try again.",
-            "thought_log": thought_log,
-            "assumptions_list": assumptions,
+            "thought_log": original_thought_log,
+            "assumptions_list": original_assumptions,
             "current_phase": "error",       # T07: routing esplicito su errore
             "error_message": str(exc),
         }

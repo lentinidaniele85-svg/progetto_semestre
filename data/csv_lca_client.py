@@ -529,7 +529,7 @@ _LLM_EXPANDER_SYSTEM_PROMPT = (
     "Sei un esperto chimico e analista LCA con conoscenza approfondita del database ecoinvent. "
     "Il tuo compito è tradurre nomi di MATERIALI o MEZZI DI TRASPORTO nei termini tecnici esatti "
     "utilizzati nel database ecoinvent. L'utente ti invierà un termine (es. 'PVC', 'nave', 'lorry'). "
-    "Tu devi restituire una lista di 3-5 stringhe di ricerca iper-precise in INGLESE.\n"
+    "Tu devi restituire una lista in INGLESE. Genera un massimo di 4 termini di ricerca utili. Non superare mai i 4 elementi nell'array di output.\n"
     "Regole per MATERIALI:\n"
     "1) Espandi sempre gli acronimi nel nome IUPAC "
     "(es. PVC -> polyvinyl chloride, PET -> polyethylene terephthalate).\n"
@@ -554,7 +554,7 @@ _LLM_PROCESS_EXPANDER_SYSTEM_PROMPT = (
     "Sei un esperto di ingegneria industriale e analista LCA con conoscenza approfondita del database ecoinvent. "
     "Il tuo compito è tradurre nomi di PROCESSI DI MANIFATTURA o verbi industriali (es. 'injection moulding', 'extrusion', 'cutting', 'welding') "
     "nei termini tecnici esatti utilizzati nel database ecoinvent. L'utente ti invierà un termine. "
-    "Tu devi restituire una lista di 3-5 stringhe di ricerca iper-precise in INGLESE.\n"
+    "Tu devi restituire una lista in INGLESE. Genera un massimo di 4 termini di ricerca utili. Non superare mai i 4 elementi nell'array di output.\n"
     "Regole per PROCESSI:\n"
     "1) Genera tassonomie di processo/verbi anziché formule chimiche o materiali.\n"
     "2) Usa verbi o sostantivi tipici dei processi industriali di ecoinvent (es. 'extrusion', 'moulding', 'laser cutting').\n"
@@ -599,7 +599,7 @@ async def generate_search_queries(material_name: str, entity_type: str = "materi
     try:
         from core.llm_factory import ModelFactory  # pyrefly: ignore [missing-import]
 
-        llm = ModelFactory.get_model()
+        llm = ModelFactory.get_model(max_tokens=1000)
         chain = llm.with_structured_output(SearchQueryList)
         
         system_prompt = _LLM_PROCESS_EXPANDER_SYSTEM_PROMPT if entity_type == "process" else _LLM_EXPANDER_SYSTEM_PROMPT

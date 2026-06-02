@@ -212,7 +212,7 @@ class MaterialAlternative(BaseModel):
     name: str
     base_material: str = Field(description="Chemical base name ONLY for DB lookup. e.g. 'carbon fiber', 'steel'")
     modifier: Optional[str] = Field(default=None, description="Sustainability attribute, e.g. 'recycled', 'bio-based'. Separated to prevent semantic anchor loss")
-    justification: str
+    justification: str = Field(description="Breve giustificazione tecnica. MASSIMO 20 parole. Sii estremamente sintetico.")
     is_recycled: bool = Field(
         default=False,
         description=(
@@ -256,7 +256,7 @@ class WorkflowAndBOMResponse(TransportValidatorMixin):
         description="Distanza stimata in km tra fornitore e sito, se esplicitata. SOLO valore numerico positivo."
     )
     total_mass_kg: Optional[float] = Field(default=None, gt=0.0, description="Massa totale in kg per la logistica.")
-    assumptions_made: List[str] = Field(default_factory=list, description="Assunzioni fatte dall'IA (es. materiale inferito).")
+    assumptions_made: List[str] = Field(default_factory=list, description="Assunzioni fatte dall'IA (es. materiale inferito). MASSIMO 15 parole per assunzione. Sii sintetico.")
     workflow_steps: List[WorkflowStep] = Field(default_factory=list, description="List of generic sequential manufacturing processes.")
     components: List[BOMComponent] = Field(default_factory=list, description="Componenti del prodotto con massa, geometria e materiale.")
     transport_mode: Optional[Literal["lorry", "ship", "aircraft"]] = Field(
