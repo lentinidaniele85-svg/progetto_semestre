@@ -726,7 +726,7 @@ ALWAYS ensure:
             # Propagate is_recycled from Pydantic component — UNICA fonte di verità
             comp["is_recycled"] = comp_data.is_recycled if hasattr(comp_data, "is_recycled") else comp.get("is_recycled", False)
 
-            # 1. Fuzzy Match del materiale nel DataSet.xlsx
+            # 1. Fuzzy Match del materiale nel dataset_ecoinvent_perfetto.xlsx
             comp_dist = comp.get("distance_km")
             eff_dist = comp_dist if comp_dist is not None else (dist_km or 0.0)
             has_transport = dist_km is not None and dist_km > 0

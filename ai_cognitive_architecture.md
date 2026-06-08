@@ -19,7 +19,7 @@ Utente
 Risposta + Report
 ```
 
-**L'LLM non tocca mai i numeri LCA.** I valori CO₂ vengono sempre letti da `DataSet.xlsx` tramite `csv_lca_client.find_closest_match()` con soglia di similarità ≥ 0.85 (Pass 1) o ≥ 0.70 (Pass 2).
+**L'LLM non tocca mai i numeri LCA.** I valori CO₂ vengono sempre letti da `dataset_ecoinvent_perfetto.xlsx` tramite `csv_lca_client.find_closest_match()` con soglia di similarità ≥ 0.85 (Pass 1) o ≥ 0.70 (Pass 2).
 
 ---
 
@@ -189,7 +189,7 @@ Output strutturato del `workflow_bom_ideator`:
 ## 6. Database LCA — `csv_lca_client.py`
 
 ### Caricamento e Ottimizzazioni Log
-- `DataSet.xlsx` → Pandas DataFrame in memoria all'avvio
+- `dataset_ecoinvent_perfetto.xlsx` → Pandas DataFrame in memoria all'avvio
 - Colonne richieste: `id`, `processname`, `outputname`, `location`, `climatechangeimpact`
 - Pre-calcolo colonne lowercase (`_flowname_lower`, `_processname_lower`) per velocità e case-insensitivity nei processi logistici
 - Log delle elaborazioni basati su UUID e campi normalizzati anziché su row index Pandas, per agevolare il debugging.

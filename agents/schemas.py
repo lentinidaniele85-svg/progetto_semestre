@@ -243,7 +243,7 @@ class WorkflowStep(BaseModel):
     process_output: str = Field(description="Adequate output of the process (flowName)")
 
 class WorkflowPlannerOutput(BaseModel):
-    searches: List[ProcessSearch] = Field(description="Searches to query DataSet.xlsx for the manufacturing steps")
+    searches: List[ProcessSearch] = Field(description="Searches to query dataset_ecoinvent_perfetto.xlsx for the manufacturing steps")
 
 class WorkflowAndBOMResponse(TransportValidatorMixin):
     is_material_only: bool = Field(description="Vero se l'input è solo un materiale grezzo, Falso se è un prodotto.")

@@ -13,7 +13,7 @@ Il sistema divide le responsabilità tra due motori complementari:
 | **Neurale** | LLM (OpenRouter) | Comprensione testo, estrazione vincoli, generazione BOM, inferenza materiali |
 | **Simbolico** | Python deterministico | Calcoli LCA, fuzzy matching DB, regole market for, filtri waste, calcolo tkm |
 
-> **Regola d'Oro:** L'LLM non ha mai l'autorità di inventare numeri di impatto ambientale. È confinato all'ideazione; Python verifica i dati con il dataset ecoinvent locale (`DataSet.xlsx`).
+> **Regola d'Oro:** L'LLM non ha mai l'autorità di inventare numeri di impatto ambientale. È confinato all'ideazione; Python verifica i dati con il dataset ecoinvent locale (`dataset_ecoinvent_perfetto.xlsx`).
 
 ---
 

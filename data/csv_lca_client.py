@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from data.lca_interface import LCADataProvider
 
-DEFAULT_DATA_PATH = Path(__file__).parent / "DataSet.xlsx"
+DEFAULT_DATA_PATH = Path(__file__).parent / "dataset_ecoinvent_perfetto.xlsx"
 
 # ---------------------------------------------------------------------------
 # Geographic Fallback Hierarchy
@@ -1354,6 +1354,7 @@ class CSVLcaClient(LCADataProvider):
             "is_market":             str(row["processname"]).lower().strip().startswith("market for"),
             "energy_mj":             self._estimate_energy_mj(row),
             "cost_per_kg":           self._estimate_cost_per_kg(row),
+            "unit_of_measure":       self._get_unit_of_measure(row),
             "location_fallback_used": location_fallback_used,
             "exact_match_found":     exact_match_found,      # ← FIX BUG
             "geo_level_used":        geo_level,              # ← FIX BUG
@@ -1383,6 +1384,24 @@ class CSVLcaClient(LCADataProvider):
                 return energy
         return _DEFAULT_ENERGY_MJ
 
+    def _get_unit_of_measure(self, row: pd.Series) -> str:
+        """Return the functional Unit of Measure (UOM) for *row*.
+
+        Letta dall'ultima colonna di ``dataset_ecoinvent_perfetto.xlsx``
+        (``unitOfMeasure`` → normalizzata in ``unitofmeasure``). Indica a
+        quale unità funzionale è riferito ``climatechangeimpact`` (es. 'kg',
+        'unit', 'm2', 'm3', 'kWh'...). È la base per scalare correttamente
+        l'impatto nel motore LCA (vedi ``_resolve_scale_factor`` in
+        ``agents.nodes``) evitando errori di magnitudo quando l'unità non è
+        una misura di massa. Default 'kg' se la colonna manca o è vuota —
+        coerente con la stragrande maggioranza dei record del dataset.
+        """
+        if "unitofmeasure" in row.index:
+            val = str(row["unitofmeasure"]).strip()
+            if val and val.lower() != "nan":
+                return val
+        return "kg"
+
     def _estimate_cost_per_kg(self, row: pd.Series) -> float:
         """Return cost estimate (€/kg) for *row*.
 
@@ -1407,7 +1426,7 @@ class CSVLcaClient(LCADataProvider):
     # ------------------------------------------------------------------
 
     async def get_impact_scores(self, material_id: str) -> dict | None:
-        """Return LCA impact scores from DataSet.xlsx.
+        """Return LCA impact scores from dataset_ecoinvent_perfetto.xlsx.
 
         Returns *None* if *material_id* is not found.
         """
@@ -1423,5 +1442,6 @@ class CSVLcaClient(LCADataProvider):
             "energy_mj":            self._estimate_energy_mj(r),
             "cost_tier":            1 if cost < 1.0 else (2 if cost < 3.0 else (3 if cost < 10.0 else 4)),
             "cost_per_kg":          cost,
+            "unit_of_measure":      self._get_unit_of_measure(r),
             "lifespan_years":       10.0,
         }

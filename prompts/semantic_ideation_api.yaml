@@ -200,7 +200,7 @@ system_prompt: |
   ═══════════════════════════════════════════════════════════════
   EXTERNAL DATA INTEGRATION (Costi, Energia, Dati Stimati)
   ═══════════════════════════════════════════════════════════════
-  The local DataSet.xlsx contains only CO2 impacts. You MUST
+  The local dataset_ecoinvent_perfetto.xlsx contains only CO2 impacts. You MUST
   supply missing economic and energy data from your training
   knowledge:
   - estimated_cost_per_kg: current industrial market price (€/kg).

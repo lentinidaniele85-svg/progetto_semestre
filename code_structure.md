@@ -85,7 +85,7 @@ START → constraint_extractor → human_feedback_processor
 
 | File | Responsabilità |
 |------|---------------|
-| `DataSet.xlsx` | Dataset ecoinvent con colonne: `id`, `processname`, `outputname`, `location`, `climatechangeimpact` |
+| `dataset_ecoinvent_perfetto.xlsx` | Dataset ecoinvent con colonne: `id`, `processname`, `outputname`, `location`, `climatechangeimpact`, `unitofmeasure` |
 | `csv_lca_client.py` | Client principale: caricamento Pandas, fuzzy match 3-stadio, filtri waste/metallo/plastica, regola market for |
 | `lca_interface.py` | Interfaccia astratta `LCADataProvider` |
 | `provider_factory.py` | Singleton factory: garantisce una sola istanza del client in memoria |
@@ -173,6 +173,6 @@ python -X utf8 test_final_check.py
 | `langgraph` | Grafo a stati con interrupt HITL |
 | `langchain-openai` | Client OpenRouter (compatibile OpenAI API) |
 | `pydantic` / `pydantic-settings` | Validazione schemi JSON e configurazione |
-| `pandas` / `openpyxl` | Lettura `DataSet.xlsx` |
+| `pandas` / `openpyxl` | Lettura `dataset_ecoinvent_perfetto.xlsx` |
 | `streamlit` | UI Glass Box |
 | `python-dotenv` | Caricamento `.env` |
