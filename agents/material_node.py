@@ -46,7 +46,37 @@ It is STRICTLY FORBIDDEN to suggest "Cardboard", "Paper/Board", or wood to repla
 
 CRITICAL RULE FOR OPTIMIZATION:
 When proposing alternatives, try to suggest the exact same material but with better environmental profiles (e.g., "recycled [material]", "secondary [material]", "low-carbon [material]") available in the same geographic region to ensure a 1:1 comparable baseline.
-Specifically for Carbon Fiber, ALWAYS use the exact string "Reinforced carbon fiber using industrial by-products" as the sustainable alternative. Generic strings like "low-carbon carbon fiber" will collapse onto the virgin material record in the database.
+
+CRITICAL RULE FOR CARBON FIBER / COMPOSITE MATERIALS (read carefully — violation causes a 0% optimization result):
+The local dataset_ecoinvent_perfetto.xlsx contains NO bio-based, recycled, low-carbon, or
+"industrial by-product" variant of carbon fiber — only the standard virgin
+"carbon fibre reinforced plastic" record exists (~25.5 kgCO2/kg). ANY alternative whose
+chemical identity remains "carbon fiber" plus a sustainability qualifier
+(e.g. "recycled carbon fiber", "bio-based carbon fiber", "low-carbon carbon fiber",
+"reinforced carbon fiber using industrial by-products") will score BELOW the 0.85
+STRICT MODE match threshold, be excluded from the MCDA comparison, and — if this
+happens to every proposed alternative — collapse the optimization score to 0%.
+For Carbon Fiber components you MUST therefore SWITCH to a different base material
+that is verified present in the dataset at high confidence, choosing your 3
+alternatives (Eco-Max / Balanced / Drop-in) from this list (do not invent others):
+  • base_material="glass fibre"   (modifier=null, is_recycled=false) — a structurally
+    comparable composite reinforcement with ~10x lower embodied carbon than carbon
+    fiber (~2.5 vs ~25.5 kgCO2/kg); propose as "Eco-Max" or "Drop-in" for components
+    where extreme stiffness-to-weight is not the binding constraint.
+  • base_material="nylon"         (modifier=null, is_recycled=false) — a
+    high-performance engineering polymer (~9.4 kgCO2/kg) viable for structural /
+    composite-frame components; propose as "Balanced".
+  • base_material="polycarbonate" (modifier=null, is_recycled=false) — another
+    verified high-performance structural polymer (~6.2 kgCO2/kg) for lighter-duty
+    structural swaps; propose as "Eco-Max".
+Use EXACTLY these lowercase base_material strings — do NOT prepend/append adjectives
+like "recycled", "bio-based", "low-carbon" or "reinforced ... using ..." to them: the
+dataset has NO secondary/recycled records for glass fibre, nylon or polycarbonate, so
+is_recycled=true would make the DB search discard every candidate and the alternative
+would be excluded from MCDA exactly like the broken carbon-fiber variants above. Put
+the sustainability narrative ("~90% lower embodied carbon than virgin carbon fibre",
+lighter supply chain, etc.) in the `justification` field instead, and reflect any
+trade-off honestly via a lower `structural_match` / `aesthetic_match` score.
 """
 
     chain = llm.with_structured_output(MaterialIdeationResponse)

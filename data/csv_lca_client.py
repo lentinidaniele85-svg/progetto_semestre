@@ -219,10 +219,26 @@ _CHEMICAL_IDENTITY_PATTERNS: list[tuple[str, str, str]] = [
     ("sub", "zinco",                    "zinc"),
     ("sub", "piombo",                   "lead"),
     # ── Naturali / altri ─────────────────────────────────────────────────
-    ("sub", "fibra di carbonio",        "carbon fiber"),
-    ("sub", "carbon fibre",             "carbon fiber"),
-    ("sub", "fibra di vetro",           "glass fiber"),
-    ("sub", "glass fibre",              "glass fiber"),
+    # NOTA SPELLING (FIX 0% OTTIMIZZAZIONE FIBRA DI CARBONIO):
+    # Il dataset_ecoinvent_perfetto.xlsx usa SEMPRE la convenzione British
+    # English ("glass fibre", "carbon fibre reinforced plastic, injection
+    # moulded", "market for glass fibre"...) — mai lo spelling US "fiber".
+    # Il "primary identity guard" di _search_best_match richiede che il
+    # termine di ricerca compaia come SOTTOSTRINGA nel nome del record: se
+    # normalizziamo a "carbon fiber"/"glass fiber" (US), la stringa NON è mai
+    # sottostringa di "carbon fibre.../"glass fibre" (UK) e l'intero pool di
+    # candidati viene scartato PRIMA dello scoring → nessun match possibile a
+    # nessuna soglia, per l'originale E per qualunque alternativa derivata.
+    # Normalizziamo quindi sempre al canonico UK "fibre", coerente sia con il
+    # dataset sia con la regola esplicita data all'LLM Semantic Expander
+    # (vedi _LLM_EXPANDER_SYSTEM_PROMPT, punto 4: "traduci sempre 'fiber' in
+    # 'fibre'... per superare la soglia di sbarramento dello 0.85").
+    ("sub", "fibra di carbonio",        "carbon fibre"),
+    ("sub", "carbon fibre",             "carbon fibre"),
+    ("sub", "carbon fiber",             "carbon fibre"),
+    ("sub", "fibra di vetro",           "glass fibre"),
+    ("sub", "glass fibre",              "glass fibre"),
+    ("sub", "glass fiber",              "glass fibre"),
     ("sub", "legno",                    "wood"),
     ("sub", "calcestruzzo",             "concrete"),
     ("sub", "cemento",                  "cement"),
@@ -463,10 +479,12 @@ _SEMANTIC_SYNONYMS: dict[str, list[str]] = {
     "legno":      ["wood", "timber", "plywood", "mdf", "board"],
     "wood":       ["wood", "timber", "plywood", "mdf", "board"],
     # Fibre
-    "fibra di carbonio": ["carbon fiber", "carbon fibre", "cfrp"],
-    "carbon fiber":      ["carbon fiber", "carbon fibre"],
-    "fibra di vetro":    ["glass fiber", "glass fibre", "gfrp", "fiberglass"],
-    "glass fiber":       ["glass fiber", "glass fibre", "fiberglass"],
+    "fibra di carbonio": ["carbon fibre", "carbon fiber", "carbon fibre reinforced plastic", "cfrp"],
+    "carbon fiber":      ["carbon fibre", "carbon fiber", "carbon fibre reinforced plastic"],
+    "carbon fibre":      ["carbon fibre", "carbon fiber", "carbon fibre reinforced plastic"],
+    "fibra di vetro":    ["glass fibre", "glass fiber", "gfrp", "fibreglass", "fiberglass"],
+    "glass fiber":       ["glass fibre", "glass fiber", "fibreglass", "fiberglass"],
+    "glass fibre":       ["glass fibre", "glass fiber", "fibreglass", "fiberglass"],
     # Gomma / elastomeri
     "gomma":      ["rubber", "elastomer", "natural rubber"],
     "rubber":     ["rubber", "elastomer", "natural rubber"],
