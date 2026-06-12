@@ -297,6 +297,48 @@ def generate_html_report(state: dict) -> str:
                 rows += f"<tr><td>{i}</td><td colspan='2'>{step}</td></tr>"
         return rows
 
+    def _matched_processes_section() -> str:
+        """Build an HTML table of all ecoinvent process names matched during LCA."""
+        rows = ""
+        for r in lca_results:
+            comp = r.get("component_name", "—")
+            proc = r.get("ecoinvent_process_name", "")
+            if not proc:
+                continue
+            orig_mat = r.get("original_material", "—")
+            rows += (
+                f"<tr><td>{comp}</td>"
+                f"<td>{orig_mat}</td>"
+                f"<td style='font-family:monospace; font-size:0.85em;'>{proc}</td></tr>"
+            )
+            # Also list alternatives if present
+            for alt in r.get("alternatives", []):
+                alt_proc = alt.get("ecoinvent_process_name", "")
+                if alt_proc:
+                    alt_name = alt.get("name", "—")
+                    rows += (
+                        f"<tr style='background:#f0fff4;'>"
+                        f"<td>{comp} <em>(alt.)</em></td>"
+                        f"<td>{alt_name}</td>"
+                        f"<td style='font-family:monospace; font-size:0.85em;'>{alt_proc}</td></tr>"
+                    )
+        if not rows:
+            return ""
+        return (
+            "<h2>&#128279; Processi Ecoinvent Matchati</h2>"
+            "<p style='font-size:0.88em; color:#555; margin-bottom:12px;'>"
+            "Nomi completi dei processi del database Ecoinvent utilizzati nel calcolo LCA."
+            "</p>"
+            "<table>"
+            "<thead><tr>"
+            "<th>Componente</th>"
+            "<th>Materiale / Processo</th>"
+            "<th>Nome Ecoinvent Completo</th>"
+            "</tr></thead>"
+            f"<tbody>{rows}</tbody>"
+            "</table>"
+        )
+
     def _assumptions_list() -> str:
         constraints = state.get("constraints", {})
         html = ""
@@ -541,6 +583,8 @@ def generate_html_report(state: dict) -> str:
 <div class="meta" style="border-left-color: #f59e0b; background: #fffdf5;">
   {_assumptions_list()}
 </div>
+
+{_matched_processes_section()}
 
 <footer>
   Sustainable Product Optimization Agent &nbsp;&middot;&nbsp; LangGraph pipeline &nbsp;&middot;&nbsp; {generated_at}
