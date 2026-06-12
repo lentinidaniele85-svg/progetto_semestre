@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 
@@ -229,7 +230,13 @@ async def lca_validator(state: AgentState) -> dict:
 
         has_market_material = False
 
-        for orig_comp in (state.get("bom") or []):
+        # FIX BOM DEEP COPY: iteriamo su una copia profonda della BOM per evitare
+        # mutazioni in-place (es. orig_comp["is_market"] = ...) che inquinano il
+        # vettore originale di state["bom"] e causano il bug dello split 50/50 sui pesi.
+        # La BOM originale mantiene il 100% del peso sul materiale di partenza.
+        bom_snapshot = copy.deepcopy(state.get("bom") or [])
+
+        for orig_comp in bom_snapshot:
             component_name = orig_comp.get("name", "")
             
             # Find alternatives for this component, if any (empty in 'modeling' mode)
@@ -365,6 +372,10 @@ async def lca_validator(state: AgentState) -> dict:
                 thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
 
                 mat_impact = orig_match["environmental_impact"]
+                # ── ESTRAZIONE processName BASELINE ─────────────────────────
+                # 'providerName' in _build_result corrisponde a row["processname"]
+                # (la colonna Excel). Lo salviamo per la tracciabilità nel report.
+                baseline_ecoinvent_process_name = orig_match.get("providerName", "N/A")
                 is_market = orig_match.get("is_market", False)  # T02: campo corretto
                 orig_comp["is_market"] = is_market
                 if is_market:
@@ -475,6 +486,8 @@ async def lca_validator(state: AgentState) -> dict:
                     thought_log.append(f"Riga Excel trovata: {idx_alt} - {provider_name_alt} - {loc_found_alt} - {val_co2_alt}")
 
                     alt_mat_impact = alt_match["environmental_impact"]
+                    # ── ESTRAZIONE processName ALTERNATIVA ──────────────────
+                    alt_ecoinvent_process_name = alt_match.get("providerName", "N/A")
                     alt_is_market = alt_match.get("is_market", False)  # T02: campo corretto
                     alt_energy = alt_match.get("energy_mj") or alt.get("estimated_energy_mj", 50.0)
                     alt_cost = alt_match.get("cost_per_kg") or alt.get("estimated_cost_per_kg", 1.0)
@@ -515,6 +528,8 @@ async def lca_validator(state: AgentState) -> dict:
                     "structural_match": alt["structural_match"],
                     "estimated_cost_change": alt.get("estimated_cost_change"),
                     "scores": scores,
+                    # processName ecoinvent dell'alternativa (per audit LCA)
+                    "ecoinvent_process_name": alt_ecoinvent_process_name,
                 })
 
             task_type = (state.get("constraints") or {}).get("task_type", "optimization")
@@ -524,6 +539,8 @@ async def lca_validator(state: AgentState) -> dict:
                     "original_material": original_material,
                     "original_scores": orig_scores_mat,
                     "alternatives": alt_results,
+                    # processName ecoinvent del materiale baseline (per audit LCA)
+                    "ecoinvent_process_name": baseline_ecoinvent_process_name,
                 })
                 lca_results.append({
                     "component_name": f"{component_name} (Manufacturing)",
@@ -547,6 +564,8 @@ async def lca_validator(state: AgentState) -> dict:
                     "original_material": original_material,
                     "original_scores": orig_scores_mat,
                     "alternatives": alt_results,
+                    # processName ecoinvent del materiale baseline (per audit LCA)
+                    "ecoinvent_process_name": baseline_ecoinvent_process_name,
                 })
 
         # ── PATCH MIXED LOGISTICS ──
@@ -560,7 +579,8 @@ async def lca_validator(state: AgentState) -> dict:
         # Il text-scan su user_input è rimosso: la fonte di verità è il campo constraints strutturato.
         global_mode = (global_mode or "").lower() or None
 
-        for orig_comp in (state.get("bom") or []):
+        # Usa la stessa snapshot già copiata (non ri-legge state["bom"] grezzo)
+        for orig_comp in bom_snapshot:
             mass_kg = orig_comp.get("weight_kg", 1.0)
             comp_mode = (orig_comp.get("transport_mode") or global_mode)
             if comp_mode:
@@ -718,6 +738,8 @@ def mcda_scorer(state: AgentState) -> dict:
                 "aesthetic_match": alt["aesthetic_match"],
                 "structural_match": alt["structural_match"],
                 "estimated_cost_change": alt.get("estimated_cost_change"),
+                # processName ecoinvent dell'alternativa (propagato da lca_validator)
+                "ecoinvent_process_name": alt.get("ecoinvent_process_name", "N/A"),
             })
 
         scored.sort(key=lambda x: x["mcda_score"], reverse=True)

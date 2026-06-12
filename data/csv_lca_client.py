@@ -813,9 +813,11 @@ class CSVLcaClient(LCADataProvider):
         self._df.columns = [c.strip().lower() for c in self._df.columns]
         self._validate_schema()
 
-        # Pre-compute lowercase columns for fast vectorised search.
-        self._df["_flowname_lower"] = self._df["outputname"].str.lower()
-        self._df["_processname_lower"] = self._df["processname"].str.lower()
+        # Pre-compute lowercase + stripped columns for fast vectorised search.
+        # .str.lower().str.strip() garantisce confronti puliti e previene
+        # falsi-negative causati da spazi/maiuscole residui nel dataset.
+        self._df["_flowname_lower"] = self._df["outputname"].str.lower().str.strip()
+        self._df["_processname_lower"] = self._df["processname"].str.lower().str.strip()
 
         # Convert climatechangeimpact to float
         self._df["climatechangeimpact"] = pd.to_numeric(
@@ -921,6 +923,21 @@ class CSVLcaClient(LCADataProvider):
         # NOTE: is_recycled parameter is the sole source of truth for recycled detection.
         # We do NOT infer recycled intent from label text-scan — that caused false positives.
 
+        # ── Normalizzazione spelling US → UK su actual_label ──────────────
+        # Ecoinvent usa SEMPRE la convenzione British English.
+        # Applichiamo le sostituzioni case-insensitive sull'intera stringa PRIMA
+        # di qualsiasi ricerca, così tutta la pipeline (SemanticNormalizer,
+        # identity guard, fuzzy scorer) riceve già il termine nella forma corretta.
+        _us_uk_fixes = [
+            (r"(?i)\bfiber\b",   "fibre"),    # carbon fiber   → carbon fibre
+            (r"(?i)\bmolding\b", "moulding"), # injection molding → injection moulding
+        ]
+        for _pat, _repl in _us_uk_fixes:
+            _fixed = re.sub(_pat, _repl, actual_label)
+            if _fixed != actual_label:
+                print(f"[SPELLING] US→UK fix: '{actual_label}' → '{_fixed}'")
+                actual_label = _fixed
+
         # ── STADIO 0: Semantic Normalization Pipeline ─────────────────────
         # Normalizza l'input PRIMA di qualsiasi ricerca:
         #   - Rimuove contenuti di contenitori (acqua, vino…)
@@ -973,9 +990,21 @@ class CSVLcaClient(LCADataProvider):
             search_terms = await generate_search_queries(normalized_label, entity_type=entity_type)
         else:
             search_terms = await generate_search_queries(normalized_label)
+        # ── Normalizzazione spelling US → UK sui search_terms ──────────────
+        # L'LLM Expander può restituire termini con spelling americano
+        # (es. "carbon fiber reinforced plastic", "injection molding").
+        # Ecoinvent usa ESCLUSIVAMENTE British English: applichiamo le stesse
+        # sostituzioni su ogni termine della lista prima di qualsiasi ricerca.
+        def _apply_uk_spelling(term: str) -> str:
+            for _pat, _repl in _us_uk_fixes:
+                term = re.sub(_pat, _repl, term)
+            return term
+
+        search_terms = [_apply_uk_spelling(t) for t in search_terms]
+
         _expander_msg = (
             f"[LLM Semantic Expander] Materiale '{normalized_label}' "
-            f"tradotto nei termini di ricerca: {search_terms}"
+            f"tradotto nei termini di ricerca (UK spelling): {search_terms}"
         )
         print(_expander_msg)
         if thought_log is not None:
@@ -1175,16 +1204,18 @@ class CSVLcaClient(LCADataProvider):
             # primary_term must appear in out_name OR proc_name
             matches_primary_out = has_word_boundary_match(primary_term, out_name)
             matches_primary_proc = has_word_boundary_match(primary_term, proc_name)
-            
+
             if not (matches_primary_out or matches_primary_proc):
-                # Fallback: controlla se c'è almeno un termine nei primi 3 search_terms che matchi out_name
+                # Fallback esteso: controlla i primi 3 search_terms su ENTRAMBE le
+                # colonne (outputname E processname) per evitare il crash della
+                # Strict Mode quando il termine è presente solo nel processName.
                 matched_any_fallback = False
                 for t in search_terms[:3]:
-                    if has_word_boundary_match(t, out_name):
+                    if has_word_boundary_match(t, out_name) or has_word_boundary_match(t, proc_name):
                         matched_any_fallback = True
                         break
                 if not matched_any_fallback:
-                    print(f"[DEBUG] Scartato '{row['outputname']}' -> Fallito primary identity guard per '{primary_term}'")
+                    print(f"[DEBUG] Scartato '{row['outputname']}' -> Fallito primary identity guard per '{primary_term}' (check su outputName e processName)")
                     continue
 
             match_geom = _get_geometry(out_name)

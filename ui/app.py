@@ -15,6 +15,18 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# ── Fix encoding Windows: forza stdout/stderr in UTF-8 ───────────────────────
+# Su Windows la console usa il codepage cp1252 di default. I print() interni
+# (es. "[NORMALIZER] ... → base_material=...") contengono caratteri non-ASCII
+# (U+2192 →) che causano UnicodeEncodeError a runtime. Il reconfigure() imposta
+# UTF-8 sull'intera sessione Streamlit senza toccare le variabili d'ambiente.
+import io as _io
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
 import uuid
 
 import pandas as pd
