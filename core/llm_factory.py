@@ -44,7 +44,7 @@ class ModelFactory:
                 # un 'max_tokens' esplicito e contenuto, il pre-flight credit-check
                 # passa, e l'output resta comunque ampiamente sufficiente per gli
                 # schemi Pydantic strutturati (ConstraintsExtract, BOM, ecc.).
-                extra_body={"max_tokens": 2500},
+                extra_body={"max_tokens": 4096},
             )
         return _model_cache[cache_key]
 
