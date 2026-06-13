@@ -7,7 +7,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agents.schemas import ConstraintsExtract
 from agents.state import AgentState
 from core.config import (
-    CO2_FALLBACK_VALUE,
     PROCESS_IMPACTS,
     TRANSPORT_IMPACT_PER_TKM,
     SHIP_IMPACT_PER_TKM,
@@ -152,8 +151,8 @@ def constraint_extractor(state: AgentState) -> dict:
     }
 
 
-# PROCESS_IMPACTS, TRANSPORT_IMPACT_PER_TKM e CO2_FALLBACK_VALUE
-# sono ora definiti in core/config.py e importati a inizio file.
+# PROCESS_IMPACTS e TRANSPORT_IMPACT_PER_TKM sono ora definiti in
+# core/config.py e importati a inizio file.
 
 
 # ---------------------------------------------------------------------------
@@ -228,8 +227,6 @@ async def lca_validator(state: AgentState) -> dict:
         # difensive ridondanti dello stesso valore — comportamento invariato.
         task_type = constraints.get("task_type", "optimization")
 
-        has_market_material = False
-
         # FIX BOM DEEP COPY: iteriamo su una copia profonda della BOM per evitare
         # mutazioni in-place (es. orig_comp["is_market"] = ...) che inquinano il
         # vettore originale di state["bom"] e causano il bug dello split 50/50 sui pesi.
@@ -273,8 +270,8 @@ async def lca_validator(state: AgentState) -> dict:
                 GEOMETRY_TO_PROCESS = {
                     "Corpi Cavi": "Blow moulding",
                     "Pezzi Pieni Complessi": "Injection moulding",
-                    "Film": "Film extrusion",
-                    "Profili/Tubi": "Tube extrusion"
+                    "Film": "Extrusion (film)",
+                    "Profili/Tubi": "Extrusion"
                 }
                 process_name = GEOMETRY_TO_PROCESS.get(orig_comp.get("geometry"), "Injection moulding").lower()
 
@@ -378,8 +375,6 @@ async def lca_validator(state: AgentState) -> dict:
                 baseline_ecoinvent_process_name = orig_match.get("providerName", "N/A")
                 is_market = orig_match.get("is_market", False)  # T02: campo corretto
                 orig_comp["is_market"] = is_market
-                if is_market:
-                    has_market_material = True
                 mat_energy = orig_match.get("energy_mj") or orig_comp.get("estimated_energy_mj", 50.0)
                 mat_cost = orig_match.get("cost_per_kg") or orig_comp.get("estimated_cost_per_kg", 1.0)
                 mat_uom = orig_match.get("unit_of_measure", "kg")
@@ -488,7 +483,6 @@ async def lca_validator(state: AgentState) -> dict:
                     alt_mat_impact = alt_match["environmental_impact"]
                     # ── ESTRAZIONE processName ALTERNATIVA ──────────────────
                     alt_ecoinvent_process_name = alt_match.get("providerName", "N/A")
-                    alt_is_market = alt_match.get("is_market", False)  # T02: campo corretto
                     alt_energy = alt_match.get("energy_mj") or alt.get("estimated_energy_mj", 50.0)
                     alt_cost = alt_match.get("cost_per_kg") or alt.get("estimated_cost_per_kg", 1.0)
                     alt_uom = alt_match.get("unit_of_measure", "kg")
@@ -803,7 +797,7 @@ async def human_feedback_processor(state: AgentState) -> dict:
         # Fase di intervista: qualsiasi risposta è una risposta alle domande mancanti
         if current_phase == "interview":
             new_user_input = state.get("user_input", "") + f"\n\n[User Interview Response]: {feedback}"
-            thought_log.append(f"Interview response received. Extracting missing constraints...")
+            thought_log.append("Interview response received. Extracting missing constraints...")
             
             # --- INGESTIONE ATTIVA DEI CONSTRAINTS ---
             llm = ModelFactory.get_model()
@@ -937,8 +931,8 @@ async def human_feedback_processor(state: AgentState) -> dict:
                 "interview_attempt_count": state.get("interview_attempt_count", 0)
             }
 
-        except Exception as exc:
-            thought_log.append(f"Errore di formattazione interno. Ripristino del checkpoint.")
+        except Exception:
+            thought_log.append("Errore di formattazione interno. Ripristino del checkpoint.")
             return {
                 "pending_feedback": "Ho avuto difficoltà a comprendere la correzione tecnica. Puoi riformulare cosa devo modificare?",
                 "current_phase": "interview", # ← Riapre il loop senza far avanzare il grafo

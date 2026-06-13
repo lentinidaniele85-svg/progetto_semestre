@@ -116,8 +116,8 @@ attempt_count == 1 (secondo tentativo):
   → phase="workflow" → PROCEDE
 ```
 
-**ProcessResolver (Material-First):**
-Ragiona su classi anziché su nomi (es. `material_class="thermoplastic"` + `geometry_class="solid"` → `Injection moulding`). Sostituisce il mapping deterministico legacy per polimeri/compositi, dando priorità al materiale invece che alla geometria.
+**Processo manifatturiero — derivato dall'LLM (Step 4 del System Prompt):**
+Il campo `manufacturing_process` di ogni `BOMComponent` è generato direttamente dall'LLM seguendo la tabella geometria→processo del System Prompt (Corpi Cavi→Blow moulding, Pezzi Pieni Complessi→Injection moulding, Film→Extrusion (film), Profili/Tubi→Extrusion). `lca_validator` (`agents/nodes.py`) traduce questo processo nell'impatto CO₂ tramite il dizionario `GEOMETRY_TO_PROCESS` + `PROCESS_IMPACTS` (`core/config.py`).
 
 **Fuzzy Match nel DB:**
 ```python
@@ -203,12 +203,12 @@ search_terms = _expand_semantic_terms(label)
 ```
 
 **Stadio 2: Fuzzy Match con filtri**
-- Filtro Waste Assoluto: `re.search(r"\bwaste\b|\bscrap\b", ...)` → skip
-- Filtro Metallo: `impact < 1.0` → skip (evita processi di trasformazione)
-- Filtro Plastica: `impact <= 0.8` → skip
-- Penalità prodotti finiti: `pipe`, `tube`, `forging`, `vessel`... → `−0.5`
-- Bonus/penalità `market for` basato su `has_transport`
-- Penalità `_get_geometry()`: geometrie incompatibili (slab vs block) → skip
+- Filtro Waste/Recycled (Boolean Gating su `is_recycled`): `re.search(r"\bwaste\b|\bscrap\b|\bscarto\b|\brecycled\b|\bsecondary\b", ...)` → skip o richiesto, secondo `is_recycled`
+- Filtro Geometria (`_get_geometry()`): geometrie incompatibili (slab vs block) → skip
+- Penalità prodotti finiti/processi (`pipe`, `tube`, `forging`, `vessel`, `vehicle`...) → `−0.5`, salvo se `geometry_hint` corrisponde (es. "tubo" → nessuna penalità su record "pipe")
+- Geometry Hint Bonus: `+0.15` se il record matcha la classe geometrica suggerita
+- Bonus/penalità `market for` vs `production` basato su `has_transport` (`±0.3` / `±0.4`)
+- Score Modifier Contestuale (`classify_search_intent`): `plastic_material` penalizza dataset petroliferi (`−0.6`), `extraction_activity` premia dataset di estrazione (`+0.25`)
 
 **Stadio 3: Fallback Geografico**
 ```

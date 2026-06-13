@@ -31,11 +31,11 @@ OPENROUTER_API_KEY=sk-or-your-actual-api-key
 
 | Variabile | Descrizione | Opzioni |
 | --- | --- | --- |
-| `LLM_PROVIDER` | Quale backend LLM usare | `ollama`, `openrouter` |
-| `OLLAMA_MODEL` | Nome del modello locale | es. `llama3`, `mistral` |
-| `OPENROUTER_API_KEY` | Chiave API di OpenRouter | **Obbligatoria** per OpenRouter |
-| `OPENROUTER_MODEL` | Modello su OpenRouter | es. `openai/gpt-3.5-turbo` |
-| `LCA_DATA_SOURCE` | Sorgente dati LCA | `csv`, `ecoinvent_api` |
+| `LLM_PROVIDER` | Backend LLM (unico supportato) | `openrouter` |
+| `OPENROUTER_API_KEY` | Chiave API di OpenRouter | **Obbligatoria** |
+| `OPENROUTER_MODEL` | Modello su OpenRouter | es. `openai/gpt-4o-mini` |
+| `LCA_DATA_SOURCE` | Sorgente dati LCA | `csv` (default), `ecoinvent_api` (non implementato) |
+| `WEIGHT_CO2` / `WEIGHT_COST` / `WEIGHT_ENERGY` / `WEIGHT_WATER` | Pesi MCDA (la somma deve essere 1.0) | default `0.70` / `0.30` / `0.0` / `0.0` |
 
 ---
 
@@ -43,7 +43,7 @@ OPENROUTER_API_KEY=sk-or-your-actual-api-key
 
 - `agents/`: Contiene i nodi di LangGraph e la definizione del grafo (`graph.py`).
 - `core/`: Configurazione e inizializzazione del modello LLM (`llm_factory.py`).
-- `data/`: Gestione dei dati LCA. Di default usa un file locale (`export.csv`).
+- `data/`: Gestione dei dati LCA. Di default usa il dataset locale `dataset_ecoinvent_perfetto.xlsx`.
 - `prompts/`: Istruzioni di sistema YAML per guidare l'LLM nelle varie fasi.
 - `reports/`: Generazione dei report in PDF/HTML con WeasyPrint.
 - `ui/`: Applicazione Streamlit "Glass Box" (`app.py`).

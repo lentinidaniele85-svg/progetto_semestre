@@ -17,8 +17,6 @@ import asyncio
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
 from agents.graph import build_graph
 from agents.schemas import (
     BOMComponent,
@@ -27,7 +25,6 @@ from agents.schemas import (
     ComponentAlternatives,
     WorkflowStep,
     BOMExtract,
-    WorkflowPlannerOutput,
     WorkflowAndBOMResponse,
     MaterialIdeationResponse,
 )

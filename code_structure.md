@@ -15,8 +15,7 @@ progetto_semestre/
 ├── ai_cognitive_architecture.md               # Architettura cognitiva dettagliata
 ├── code_structure.md                          # Struttura del codice (questo file)
 │
-├── test_full_logic.py                         # Test suite logica workflow + BOM review (33 test)
-├── test_final_check.py                        # Test finale esempi documento + prompt extra (56 test)
+├── test_prompts_reali.py                      # Test E2E manuale: esegue prompt reali contro il grafo (richiede LLM attivo)
 │
 ├── agents/                                    # Grafo LangGraph e nodi
 ├── core/                                      # Configurazione e LLM factory
@@ -76,7 +75,6 @@ START → constraint_extractor → human_feedback_processor
 **Costanti chiave in `config.py`:**
 - `PROCESS_IMPACTS`: impatto CO₂ per tipo processo manifatturiero (Injection moulding, Extrusion, ecc.)
 - `TRANSPORT_IMPACT_PER_TKM`: valore fallback trasporto su camion (0.05 kgCO₂/tkm)
-- `CO2_FALLBACK_VALUE`: valore fallback materiale se non trovato nel DB
 - `weight_co2`, `weight_cost`, `weight_energy`: pesi MCDA
 
 ---
@@ -98,9 +96,11 @@ Input: label, location, has_transport
 
 Stadio 1: Espansione semantica (sinonimi industriali)
 Stadio 2: Filtro candidati per location (exact → partial → fallback geo)
-         + Filtro waste assoluto
-         + Filtro impatto (metallo < 1.0, plastica ≤ 0.8)
+         + Filtro waste/recycled (Boolean Gating su is_recycled)
+         + Filtro geometria (_get_geometry, slab vs block ecc.)
          + Score difflib con bonus/penalità market for / production
+         + Penalità prodotti finiti (-0.5) / Geometry Hint Bonus (+0.15)
+         + Score Modifier Contestuale (plastic_material -0.6, extraction_activity +0.25)
 Stadio 3: Se non trovato → prossima geografia nella gerarchia
 
 Pass 1 soglia 0.85 → materiali vergini
@@ -137,7 +137,7 @@ La UI non contiene logica di business. Comunica con il grafo LangGraph tramite `
 
 | File | Contenuto |
 |------|-----------|
-| `generator.py` | Rendering HTML/PDF del report finale: BOM, LCA results, MCDA scores, assunzioni dichiarate |
+| `generator.py` | Rendering HTML/PDF del report finale: BOM, LCA results, MCDA scores, assunzioni dichiarate, tabella processi Ecoinvent matchati (ultima sezione prima del footer) |
 
 ---
 
@@ -150,18 +150,18 @@ La UI non contiene logica di business. Comunica con il grafo LangGraph tramite `
 
 ---
 
-## Test nella Root (verifica logica attuale)
+## Test nella Root (verifica E2E manuale)
 
 | File | Contenuto | Copertura |
 |------|-----------|-----------|
-| `test_full_logic.py` | Test suite 33 test: market for, waste, interview, autonomia, BOM review | Logica deterministica completa |
-| `test_final_check.py` | Test finale 56 test: 3 esempi dal prompt di sistema + 12 prompt aggiuntivi | Esempi System Prompt + funzionalità extra |
+| `test_prompts_reali.py` | 11 prompt realistici (modeling/optimization) eseguiti contro il grafo reale, con LLM attivo (richiede `OPENROUTER_API_KEY` valida e credito disponibile) | Smoke test end-to-end con LLM reale |
 
 Per eseguire:
 ```bash
-python -X utf8 test_full_logic.py
-python -X utf8 test_final_check.py
+python -X utf8 test_prompts_reali.py
 ```
+
+Per i test automatici (mock LLM, nessun credito richiesto), usare la suite pytest in `tests/` (vedi sopra).
 
 ---
 

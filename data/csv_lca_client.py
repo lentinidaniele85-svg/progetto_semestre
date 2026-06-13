@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 import difflib
 from typing import List, Optional, Tuple
@@ -5,6 +6,8 @@ import pandas as pd
 from pydantic import BaseModel
 
 from data.lca_interface import LCADataProvider
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_PATH = Path(__file__).parent / "dataset_ecoinvent_perfetto.xlsx"
 
@@ -545,6 +548,11 @@ def _expand_semantic_terms(label: str) -> List[str]:
 # Cache di sessione: {material_lower -> lista di termini espansi}
 _llm_expansion_cache: dict[str, list[str]] = {}
 
+
+def flush_expansion_cache() -> None:
+    """Evict ALL entries from the global LLM semantic expansion cache."""
+    _llm_expansion_cache.clear()
+
 _LLM_EXPANDER_SYSTEM_PROMPT = (
     "Sei un esperto chimico e analista LCA con conoscenza approfondita del database ecoinvent. "
     "Il tuo compito è tradurre nomi di MATERIALI o MEZZI DI TRASPORTO nei termini tecnici esatti "
@@ -854,6 +862,7 @@ class CSVLcaClient(LCADataProvider):
         """
         self._match_cache.clear()
         self._search_cache.clear()
+        flush_expansion_cache()
 
     # ------------------------------------------------------------------
     # Public API
@@ -935,7 +944,7 @@ class CSVLcaClient(LCADataProvider):
         for _pat, _repl in _us_uk_fixes:
             _fixed = re.sub(_pat, _repl, actual_label)
             if _fixed != actual_label:
-                print(f"[SPELLING] US→UK fix: '{actual_label}' → '{_fixed}'")
+                logger.debug("[SPELLING] US→UK fix: '%s' -> '%s'", actual_label, _fixed)
                 actual_label = _fixed
 
         # ── STADIO 0: Semantic Normalization Pipeline ─────────────────────
@@ -949,12 +958,13 @@ class CSVLcaClient(LCADataProvider):
 
         # Log auditabile della normalizzazione
         if normalized_label.lower() != actual_label.lower().strip():
-            print(
-                f"[NORMALIZER] '{actual_label}' → base_material='{normalized_label}'"
-                f"{', geometry_hint=' + repr(geometry_hint) if geometry_hint else ''}"
-                f"{', inferred=' + str(norm_result.inferred_material) if norm_result.inferred_material else ''}"
-                f"{', strong_modifiers=' + str(norm_result.strong_modifiers) if norm_result.strong_modifiers else ''}"
-                f"{', stripped=' + str(norm_result.stripped_tokens) if norm_result.stripped_tokens else ''}"
+            logger.debug(
+                "[NORMALIZER] '%s' -> base_material='%s'%s%s%s%s",
+                actual_label, normalized_label,
+                ', geometry_hint=' + repr(geometry_hint) if geometry_hint else '',
+                ', inferred=' + str(norm_result.inferred_material) if norm_result.inferred_material else '',
+                ', strong_modifiers=' + str(norm_result.strong_modifiers) if norm_result.strong_modifiers else '',
+                ', stripped=' + str(norm_result.stripped_tokens) if norm_result.stripped_tokens else '',
             )
 
         # label_lower ora punta al materiale normalizzato (es. "PVC" invece di "PVC rigido per edilizia")
@@ -1006,7 +1016,7 @@ class CSVLcaClient(LCADataProvider):
             f"[LLM Semantic Expander] Materiale '{normalized_label}' "
             f"tradotto nei termini di ricerca (UK spelling): {search_terms}"
         )
-        print(_expander_msg)
+        logger.debug(_expander_msg)
         if thought_log is not None:
             thought_log.append(_expander_msg)
 
@@ -1034,9 +1044,9 @@ class CSVLcaClient(LCADataProvider):
         # Pass 1: Virgin-First Logic (or Recycled-First Logic quando is_recycled=True)
         for i, geo in enumerate(geographies_to_try):
             if i == 0:
-                print(f"[DEBUG] Stage 0: Cerco '{label_lower}' in {geo}...")
+                logger.debug("[DEBUG] Stage 0: Cerco '%s' in %s...", label_lower, geo)
             else:
-                print(f"[DEBUG] Nessun match in {geographies_to_try[i-1]}. Passo a {geo}...")
+                logger.debug("[DEBUG] Nessun match in %s. Passo a %s...", geographies_to_try[i-1], geo)
 
             is_fallback = (geo != canonical_loc) if canonical_loc else False
             row = self._search_best_match(
@@ -1052,7 +1062,7 @@ class CSVLcaClient(LCADataProvider):
 
         # Pass 1.5: Fallback automatico con soglia a 0.75
         for i, geo in enumerate(geographies_to_try):
-            print(f"[DEBUG] Stage 1.5: Fallback soglia 0.75 per '{label_lower}' in {geo}...")
+            logger.debug("[DEBUG] Stage 1.5: Fallback soglia 0.75 per '%s' in %s...", label_lower, geo)
             is_fallback = (geo != canonical_loc) if canonical_loc else False
             row = self._search_best_match(
                 search_terms, actual_label.lower().strip(), geo, task_type, 0.75, self._df,
@@ -1113,7 +1123,7 @@ class CSVLcaClient(LCADataProvider):
             is_recycled: If True, disables virgin-first filter and applies recycled-content
                          score bonuses. This is the SOLE source of truth — no text-scan.
         """
-        print(f"[DEBUG _search_best_match] Analisi query: '{original_label}' in loc: '{loc}', termini: {search_terms}")
+        logger.debug("[DEBUG _search_best_match] Analisi query: '%s' in loc: '%s', termini: %s", original_label, loc, search_terms)
         df_search = self._get_location_subset(loc, base_df)
         if df_search.empty:
             return None
@@ -1132,14 +1142,10 @@ class CSVLcaClient(LCADataProvider):
             return None
 
         # STADIO 2: Filtro Dinamico (Post-Processing)
-        is_metal = any(m in original_label for m in ["steel", "aluminum", "aluminium", "iron", "copper", "brass", "metal", "titanium", "acciaio", "alluminio", "ferro", "rame", "ottone"])
-        is_plastic = any(m in original_label for m in ["plastic", "polyethylene", "polypropylene", "pet", "hdpe", "ldpe", "polyester", "nylon", "plastica", "polimero"])
-        
         valid_indices = []
         for idx, row in candidates.iterrows():
             out_name = row["_flowname_lower"]
             proc_name = row["_processname_lower"]
-            impact = float(row["climatechangeimpact"])
             name_combined = f"{out_name} {proc_name}"
             
             import re
@@ -1149,17 +1155,17 @@ class CSVLcaClient(LCADataProvider):
             # Nessun text-scan su original_label: elimina falsi positivi.
             if not is_recycled and require_virgin:
                 if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b|\brecycled\b|\bsecondary\b", name_combined):
-                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Vergine Semantico)")
+                    logger.debug("[DEBUG] Trovato %s in %s -> Scartato (Filtro Vergine Semantico)", row['outputname'], loc)
                     continue
             elif not is_recycled:
                 # is_recycled=False: scarta waste/scrap assoluto anche in pass2
                 if re.search(r"\bwaste\b|\bscrap\b|\bscarto\b", name_combined):
-                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Filtro Waste Assoluto)")
+                    logger.debug("[DEBUG] Trovato %s in %s -> Scartato (Filtro Waste Assoluto)", row['outputname'], loc)
                     continue
             else:
                 # is_recycled=True: disattiva require_virgin, cerca solo materiali secondari/scrap
                 if not re.search(r"\bwaste\b|\bscrap\b|\bscarto\b|\brecycled\b|\bsecondary\b", name_combined):
-                    print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (is_recycled=True ma record è vergine)")
+                    logger.debug("[DEBUG] Trovato %s in %s -> Scartato (is_recycled=True ma record è vergine)", row['outputname'], loc)
                     continue
             # Legno/Naturali non hanno limiti (nessun else break)
             
@@ -1168,13 +1174,13 @@ class CSVLcaClient(LCADataProvider):
         candidates = candidates.loc[valid_indices]
 
         if candidates.empty:
-            print(f"[DEBUG] Geografia {loc} scartata (0 candidati validi dopo il filtro).")
+            logger.debug("[DEBUG] Geografia %s scartata (0 candidati validi dopo il filtro).", loc)
             return None
 
         # DIRETTIVA 1: Calcola l'intent UNA SOLA VOLTA per questa query (fuori dal loop)
         search_intent = classify_search_intent(original_label)
         if search_intent != "generic":
-            print(f"[INTENT] classify_search_intent('{original_label}') -> '{search_intent}'")
+            logger.debug("[INTENT] classify_search_intent('%s') -> '%s'", original_label, search_intent)
 
         # STADIO 2: Best-Match Logic
         # Troviamo il candidato con la massima similarità usando difflib su entrambe le colonne
@@ -1185,9 +1191,8 @@ class CSVLcaClient(LCADataProvider):
         for idx, row in candidates.iterrows():
             out_name = row["_flowname_lower"]
             proc_name = row["_processname_lower"]
-            impact = float(row["climatechangeimpact"])
             name_combined = f"{out_name} {proc_name}"
-            
+
             # GARANZIA DI IDENTITÀ (Ticket 2)
             primary_term = search_terms[0].lower()
             
@@ -1215,14 +1220,14 @@ class CSVLcaClient(LCADataProvider):
                         matched_any_fallback = True
                         break
                 if not matched_any_fallback:
-                    print(f"[DEBUG] Scartato '{row['outputname']}' -> Fallito primary identity guard per '{primary_term}' (check su outputName e processName)")
+                    logger.debug("[DEBUG] Scartato '%s' -> Fallito primary identity guard per '%s' (check su outputName e processName)", row['outputname'], primary_term)
                     continue
 
             match_geom = _get_geometry(out_name)
             
             # VINCOLO GEOMETRIA: scarta se le geometrie sono diverse (es. slab vs block)
             if orig_geom is not None and match_geom is not None and orig_geom != match_geom:
-                print(f"[DEBUG] Trovato {row['outputname']} in {loc} -> Scartato (Geometria non corrispondente)")
+                logger.debug("[DEBUG] Trovato %s in %s -> Scartato (Geometria non corrispondente)", row['outputname'], loc)
                 continue
                 
             # Calcola lo score migliore tra tutti i termini di ricerca su entrambe le colonne
@@ -1273,10 +1278,10 @@ class CSVLcaClient(LCADataProvider):
             # NON basato su text-scan — elimina falsi positivi.
             if is_recycled and any(term in name_combined for term in ["recycled", "riciclato", "secondary", "scrap", "waste"]):
                 score += 0.3
-                print(f"[RECYCLED] Bonus +0.3 a '{row['outputname']}' (is_recycled=True, record secondario)")
+                logger.debug("[RECYCLED] Bonus +0.3 a '%s' (is_recycled=True, record secondario)", row['outputname'])
             elif is_recycled and any(term in name_combined for term in ["primary", "virgin", "unalloyed", "production"]):
                 score -= 0.5
-                print(f"[RECYCLED] Malus -0.5 a '{row['outputname']}' (is_recycled=True ma record è vergine/primary)")
+                logger.debug("[RECYCLED] Malus -0.5 a '%s' (is_recycled=True ma record è vergine/primary)", row['outputname'])
                 
             # Penalità di Fedeltà: Scarta la ghisa (iron/cast iron) se l'utente ha chiesto acciaio (steel)
             if "steel" in search_terms and "iron" not in search_terms and "ghisa" not in search_terms:
@@ -1316,7 +1321,7 @@ class CSVLcaClient(LCADataProvider):
                     pass  # Geometria richiesta: nessuna penalità
                 else:
                     score -= 0.5
-                    print(f"[DEBUG] Declassato '{row['outputname']}' (-0.5) perché processo/prodotto finito/veicolo. Cerco materia prima...")
+                    logger.debug("[DEBUG] Declassato '%s' (-0.5) perché processo/prodotto finito/veicolo. Cerco materia prima...", row['outputname'])
 
             # Geometry Hint Bonus (dal SemanticNormalizer)
             # Se l'utente ha implicato una geometria (es. "tubo" → "profile"),
@@ -1325,7 +1330,7 @@ class CSVLcaClient(LCADataProvider):
                 hint_keywords = _GEOMETRY_SIGNALS.get(geometry_hint, ())
                 if any(kw in name_combined for kw in hint_keywords):
                     score += 0.15
-                    print(f"[GEOMETRY] Bonus +0.15 a '{row['outputname']}' (geometry_hint='{geometry_hint}' confermato)")
+                    logger.debug("[GEOMETRY] Bonus +0.15 a '%s' (geometry_hint='%s' confermato)", row['outputname'], geometry_hint)
 
             # DIRETTIVA 1: Score Modifier Contestuale
             # Agisce SOLO sullo score — non elimina il record dal pool candidati.
@@ -1340,9 +1345,9 @@ class CSVLcaClient(LCADataProvider):
                 }
                 if any(signal in name_combined for signal in _petro_signals):
                     score -= 0.6
-                    print(
-                        f"[INTENT] plastic_material: penalizzato '{row['outputname']}' "
-                        f"(-0.6, segnali petroliferi in contesto plastica)"
+                    logger.debug(
+                        "[INTENT] plastic_material: penalizzato '%s' (-0.6, segnali petroliferi in contesto plastica)",
+                        row['outputname'],
                     )
             elif search_intent == "extraction_activity":
                 # Premia dataset estrattivi in contesto estrazione.
@@ -1352,9 +1357,9 @@ class CSVLcaClient(LCADataProvider):
                 }
                 if any(signal in name_combined for signal in _extract_signals):
                     score += 0.25
-                    print(
-                        f"[INTENT] extraction_activity: premiato '{row['outputname']}' "
-                        f"(+0.25, segnali estrattivi in contesto estrazione)"
+                    logger.debug(
+                        "[INTENT] extraction_activity: premiato '%s' (+0.25, segnali estrattivi in contesto estrazione)",
+                        row['outputname'],
                     )
             # "generic": nessuna modifica — comportamento attuale invariato
 
@@ -1363,13 +1368,15 @@ class CSVLcaClient(LCADataProvider):
                 best_row = row
 
         if best_score >= threshold and best_row is not None:
-            print(f"[DEBUG MATCH TROVATO] ID da cercare nel JSON: '{best_row.get('id')}' | Processo: '{best_row.get('processname')}' | Location: '{best_row.get('location')}' | Impatto: {best_row.get('climatechangeimpact')}")
+            logger.debug(
+                "[DEBUG MATCH TROVATO] ID da cercare nel JSON: '%s' | Processo: '%s' | Location: '%s' | Impatto: %s",
+                best_row.get('id'), best_row.get('processname'), best_row.get('location'), best_row.get('climatechangeimpact'),
+            )
             return best_row
         elif best_row is not None:
-            print(
-                f"[MISS FAIL] '{best_row['outputname']}' | {loc} "
-                f"| Score: {best_score:.3f} < {threshold} "
-                f"| ID: {best_row['id']}"
+            logger.debug(
+                "[MISS FAIL] '%s' | %s | Score: %.3f < %s | ID: %s",
+                best_row['outputname'], loc, best_score, threshold, best_row['id'],
             )
             
         return None

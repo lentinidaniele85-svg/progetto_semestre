@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import datetime
 import logging
+from html import escape
 
 logger = logging.getLogger(__name__)
 
 
 def generate_html_report(state: dict) -> str:
     """Return a self-contained HTML string from a completed AgentState dict."""
-    user_input = state.get("user_input") or "N/A"
+    user_input = escape(state.get("user_input") or "N/A")
     bom: list[dict] = state.get("bom") or []
     lca_results: list[dict] = state.get("lca_results") or []
     mcda_scores: list[dict] = state.get("mcda_scores") or []
@@ -345,7 +346,7 @@ def generate_html_report(state: dict) -> str:
         if constraints:
             html += "<strong>Vincoli Estratti (Constraints):</strong><ul>"
             for k, v in constraints.items():
-                html += f"<li><strong>{k}</strong>: {v}</li>"
+                html += f"<li><strong>{escape(str(k))}</strong>: {escape(str(v))}</li>"
             html += "</ul><hr style='border:none; border-top:1px solid #ddd; margin:12px 0;'/>"
 
         unique_assumptions = list(dict.fromkeys(assumptions_list))
@@ -358,7 +359,7 @@ def generate_html_report(state: dict) -> str:
         else:
             html += "<strong>Assunzioni del Modello:</strong><ul>"
             for a in filtered_assumptions:
-                html += f"<li>{a}</li>"
+                html += f"<li>{escape(str(a))}</li>"
             html += "</ul>"
 
         # ── Blocco Audit Ecoinvent ad Alta Visibilità ────────────────────────

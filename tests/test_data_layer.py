@@ -1,5 +1,4 @@
 import asyncio
-from pathlib import Path
 from unittest.mock import patch, AsyncMock
 
 import pytest
@@ -74,7 +73,6 @@ def test_get_impact_scores_deterministic(client: CSVLcaClient) -> None:
 # ---------------------------------------------------------------------------
 
 import pandas as pd
-from unittest.mock import patch
 
 
 @pytest.fixture

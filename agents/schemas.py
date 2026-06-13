@@ -234,16 +234,9 @@ class ComponentAlternatives(BaseModel):
     component_name: str
     alternatives: List[MaterialAlternative]
 
-class ProcessSearch(BaseModel):
-    query: str = Field(description="The general process name (e.g., 'molding', 'cutting', 'extrusion', 'welding')")
-    expected_output: str = Field(description="The expected output of this process (e.g., 'steel part', 'plastic component')")
-
 class WorkflowStep(BaseModel):
     process_name: str = Field(description="Name of the manufacturing process (providerName)")
     process_output: str = Field(description="Adequate output of the process (flowName)")
-
-class WorkflowPlannerOutput(BaseModel):
-    searches: List[ProcessSearch] = Field(description="Searches to query dataset_ecoinvent_perfetto.xlsx for the manufacturing steps")
 
 class WorkflowAndBOMResponse(TransportValidatorMixin):
     is_material_only: bool = Field(description="Vero se l'input è solo un materiale grezzo, Falso se è un prodotto.")

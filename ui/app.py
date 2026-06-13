@@ -16,11 +16,10 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── Fix encoding Windows: forza stdout/stderr in UTF-8 ───────────────────────
-# Su Windows la console usa il codepage cp1252 di default. I print() interni
+# Su Windows la console usa il codepage cp1252 di default. I log di debug
 # (es. "[NORMALIZER] ... → base_material=...") contengono caratteri non-ASCII
 # (U+2192 →) che causano UnicodeEncodeError a runtime. Il reconfigure() imposta
 # UTF-8 sull'intera sessione Streamlit senza toccare le variabili d'ambiente.
-import io as _io
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
@@ -871,11 +870,12 @@ with right_col:
                             else:
                                 opt_data = lca_lookup.get(comp_name, {})
                                 from core.config import PROCESS_IMPACTS
-                                proc_unit = opt_data.get("process_unit_impact", PROCESS_IMPACTS.get(proc, 1.0))
+                                proc_default = PROCESS_IMPACTS.get(proc, PROCESS_IMPACTS.get(proc.capitalize(), 1.0))
+                                proc_unit = opt_data.get("process_unit_impact", proc_default)
                                 proc_total = opt_data.get("process_total_impact", proc_unit * weight)
                         else:
                             from core.config import PROCESS_IMPACTS
-                            proc_unit = PROCESS_IMPACTS.get(proc, 1.0)
+                            proc_unit = PROCESS_IMPACTS.get(proc, PROCESS_IMPACTS.get(proc.capitalize(), 1.0))
                             proc_total = proc_unit * weight
                             
                         proc_row["unit_impact"] = proc_unit

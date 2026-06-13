@@ -24,7 +24,13 @@ async def material_ideator(state: AgentState) -> dict:
         constraints["geography"] = map_geo(constraints["geography"])
 
     bom = state.get("bom", [])
-    
+
+    # NOTA: il blocco "CRITICAL RULE FOR CARBON FIBER / COMPOSITE MATERIALS" nel
+    # user_prompt sotto è un workaround specifico per l'attuale
+    # dataset_ecoinvent_perfetto.xlsx, che non contiene varianti riciclate/bio-based
+    # di carbon fiber sopra la soglia di match 0.85. Se il dataset viene aggiornato
+    # con nuovi record di carbon fiber (riciclata/bio-based), questo blocco va
+    # ri-verificato e potenzialmente rimosso o aggiornato di conseguenza.
     system_prompt = ModelFactory.get_system_prompt("semantic_ideation_api").format(
         user_input=state.get("user_input", ""),
         constraints=json.dumps(constraints),

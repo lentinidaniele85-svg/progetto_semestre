@@ -26,7 +26,7 @@ L'agente segue la pipeline definita nel prompt di sistema:
 | 1 | **Analisi Entità** | Materiale grezzo vs prodotto complesso (`is_material_only`) |
 | 2 | **Lookup Aggregato** | Verifica se esiste già un dataset ecoinvent per il prodotto intero |
 | 3 | **Selezione Materiale** | Inferenza LLM per esclusione tecnica; ogni inferenza va in `assumptions_list` |
-| 4 | **Vincolo Geometrico** | Geometria → processo manifatturiero (Process Resolver Material-First) |
+| 4 | **Vincolo Geometrico** | Geometria → processo manifatturiero, derivato direttamente dall'LLM (`manufacturing_process` nel BOMComponent) seguendo la mappatura del System Prompt (Corpi Cavi→Blow moulding, Pezzi Pieni Complessi→Injection moulding, Film→Extrusion (film), Profili/Tubi→Extrusion); usato poi da `lca_validator` (`GEOMETRY_TO_PROCESS` in `agents/nodes.py`) per il lookup dell'impatto CO₂ del processo |
 | 5 | **Scomposizione BOM** | Generazione distinta base per componenti |
 | 6 | **Calcolo Logistica** | `tkm = (massa_kg / 1000) × distanza_km`; anti double-counting market |
 | 7 | **Gap Analysis** | Controllo dati mancanti → interview o assunzioni autonome |
