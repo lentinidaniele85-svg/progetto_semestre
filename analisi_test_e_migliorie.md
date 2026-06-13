@@ -72,7 +72,6 @@ Il file `Prompt.txt` contiene 10 prompt reali in italiano che rappresentano i ca
 La chiave `OPENROUTER_API_KEY=sk-or-v1-...` è in chiaro nel file `.env`. Anche se `.env` è tipicamente nel `.gitignore`, il `.gitignore` attuale potrebbe non escluderlo correttamente o potrebbe essere stato committato in passato.
 
 ```
-OPENROUTER_API_KEY=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
 ```
 
 ---
