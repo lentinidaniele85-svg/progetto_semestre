@@ -71,6 +71,13 @@ PROCESS_IMPACTS: dict[str, float] = {
     "Glass production": 1.4,
     "Ceramic firing": 1.6,
     "electronic component production, wafer fabrication": 1.2000,
+    # Chiavi lowercase allineate ai nomi assegnati dal ProcessMapper geometria-consapevole
+    # (workflow_node.py): usate come fallback SOLO se il match dinamico nel DB fallisce.
+    "extrusion, plastic film": 0.5,
+    "extrusion, plastic pipe": 0.6,
+    "extrusion of aluminium": 1.1,
+    "blow moulding": 0.8,
+    "injection moulding": 1.2,
 }
 
 # Impatto trasporto [kg CO₂ eq / (tonnellata · km)]

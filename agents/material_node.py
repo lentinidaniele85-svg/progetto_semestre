@@ -15,7 +15,8 @@ async def material_ideator(state: AgentState) -> dict:
     is_italian = lambda text: any(char in 'àèéìòù' for char in text.lower())
     is_ita = is_italian(state.get("user_input", ""))
 
-    llm = ModelFactory.get_model(max_tokens=2000)
+    # 4000 token: 3 alternative × più componenti senza troncare il JSON strutturato.
+    llm = ModelFactory.get_model(max_tokens=4000)
     constraints = dict(state.get("constraints", {}))
     
     def map_geo(g):
@@ -54,6 +55,32 @@ It is STRICTLY FORBIDDEN to suggest "Cardboard", "Paper/Board", or wood to repla
 
 CRITICAL RULE FOR OPTIMIZATION:
 When proposing alternatives, try to suggest the exact same material but with better environmental profiles (e.g., "recycled [material]", "secondary [material]", "low-carbon [material]") available in the same geographic region to ensure a 1:1 comparable baseline.
+
+CRITICAL RULE FOR RECYCLED / SECONDARY VARIANTS (violation causes a 0% optimization result):
+When proposing a recycled or secondary alternative, you MUST set base_material to the CLEAN
+chemical polymer name as it appears in ecoinvent (e.g. "polyethylene", "polypropylene", "PET")
+and set is_recycled=true. It is STRICTLY FORBIDDEN to put recycled abbreviations or invented
+compound names in base_material — NEVER "rLDPE", "rPE", "rPET", "rPP", "biopolymers",
+"bio-LDPE". Those strings are NOT ecoinvent records: the STRICT MODE retrieval (threshold 0.85)
+rejects every such alternative and the optimization collapses to 0%. The ecoinvent dataset DOES
+contain recycled polyethylene/PET records (e.g. "treatment of waste polyethylene, low density,
+pellets, recycling"), but they are only reachable when base_material is the clean polymer name
+AND is_recycled=true. Put the "recycled"/"secondary"/"bio-based" narrative in the `modifier` and
+`justification` fields, NEVER in base_material.
+Example (CORRECT): base_material="polyethylene", modifier="recycled", is_recycled=true.
+Example (WRONG, will be rejected): base_material="rLDPE".
+
+CRITICAL RULE FOR LABEL ↔ MATERIAL CONSISTENCY (no greenwashing):
+The alternative's `name`, `modifier` and `justification` MUST be consistent with `base_material`.
+- If base_material is the ORIGINAL fossil polymer with is_recycled=true (e.g. polyethylene),
+  describe it ONLY as "recycled"/"secondary [polymer]" — it is STRICTLY FORBIDDEN to call it
+  "bio-based", "biodegradable" or "compostable": a recycled fossil polymer is none of those.
+- If you genuinely propose a BIO-BASED / BIODEGRADABLE alternative, base_material MUST be the
+  REAL chemical name of that bio-polymer (e.g. "polylactic acid", "polyhydroxyalkanoate",
+  "starch-based polymer", "cellulose") — NEVER the original fossil polymer. If that bio-material
+  is absent from the database it will be honestly rejected by STRICT MODE: that is acceptable
+  and correct, far better than mislabelling a fossil-polymer record as bio-based.
+NEVER keep base_material = original fossil polymer while labelling the alternative bio-based.
 
 CRITICAL RULE FOR CARBON FIBER / COMPOSITE MATERIALS (read carefully — violation causes a 0% optimization result):
 The local dataset_ecoinvent_perfetto.xlsx contains NO bio-based, recycled, low-carbon, or

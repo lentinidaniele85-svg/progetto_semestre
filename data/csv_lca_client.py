@@ -559,6 +559,10 @@ _LLM_EXPANDER_SYSTEM_PROMPT = (
     "Regole per MATERIALI:\n"
     "1) Espandi sempre gli acronimi nel nome IUPAC "
     "(es. PVC -> polyvinyl chloride, PET -> polyethylene terephthalate).\n"
+    "1b) ATTENZIONE: 'polyethylene' (PE, LDPE, HDPE) e 'polyethylene terephthalate' (PET) "
+    "sono polimeri DIVERSI. Se ricevi 'polyethylene'/'PE'/'LDPE'/'HDPE' NON includere MAI "
+    "'polyethylene terephthalate' o 'PET' tra i termini. Viceversa, se ricevi 'PET' NON "
+    "includere 'polyethylene' generico.\n"
     "2) Includi l'acronimo stesso come fallback.\n"
     "3) Se è una plastica, aggiungi varianti comuni nei DB come 'granulate' o 'suspension polymerised'.\n"
     "4) Usa rigorosamente la tassonomia e le convenzioni di spelling dell'Inglese Britannico (UK) per i materiali industriali. Ad esempio, traduci sempre 'fiber' in 'fibre', 'molding' in 'moulding', etc., per garantire che l'algoritmo fuzzy superi la soglia di sbarramento dello 0.85.\n"
@@ -647,6 +651,46 @@ async def generate_search_queries(material_name: str, entity_type: str = "materi
             expanded = [material_name, f"{material_name}ing", f"{material_name} moulding", f"{material_name} extrusion"]
         else:
             expanded = _expand_semantic_terms(material_name.lower())
+
+    # ── GUARD DETERMINISTICO PE ≠ PET ────────────────────────────────────────
+    # L'LLM espande spesso "polyethylene" (PE) includendo "polyethylene terephthalate"
+    # (PET) — un polimero CHIMICAMENTE DIVERSO. Poiché il primary-identity guard usa
+    # search_terms[0], basta che PET finisca in testa per matchare record PET sbagliati
+    # (baseline E alternative). Se la query è PE (e NON PET) rimuoviamo ogni termine
+    # contenente terephthalate/PET; viceversa se è PET lo lasciamo intatto.
+    if entity_type == "material":
+        _ml = material_name.lower()
+        _is_pet = "terephthalate" in _ml or bool(re.search(r"\bpet\b", _ml))
+        _is_pe = (not _is_pet) and (
+            "polyethylene" in _ml or "polietilene" in _ml
+            or bool(re.search(r"\b(pe|hdpe|ldpe|lldpe)\b", _ml))
+        )
+        if _is_pe:
+            _filtered = [
+                t for t in expanded
+                if "terephthalate" not in t.lower() and not re.search(r"\bpet\b", t.lower())
+            ]
+            if _filtered:
+                expanded = _filtered
+            else:
+                expanded = [material_name]
+
+        # ── ORDINE-PAROLE ECOINVENT PER LE VARIANTI DI DENSITÀ DEL PE ─────────
+        # I record ecoinvent si chiamano "polyethylene, high density, ..." /
+        # "polyethylene, low density, ...", NON "high-density polyethylene"/"HDPE".
+        # L'LLM produce la forma aggettivo-davanti, che NON è sottostringa del nome
+        # del record: l'identity guard (usa search_terms[0]) fallisce e genera un
+        # FALSO STRICT FAIL su un materiale che è presente nel dataset. Mettiamo
+        # quindi la forma ecoinvent come termine PRIMARIO.
+        _eco_pe = None
+        if "high density" in _ml or "high-density" in _ml or re.search(r"\bhdpe\b", _ml):
+            _eco_pe = "polyethylene, high density"
+        elif "low density" in _ml or "low-density" in _ml or re.search(r"\b(ldpe|lldpe)\b", _ml):
+            _eco_pe = "polyethylene, low density"
+        if _eco_pe:
+            expanded = [_eco_pe, "polyethylene"] + [
+                t for t in expanded if t.strip().lower() not in (_eco_pe, "polyethylene")
+            ]
 
     _llm_expansion_cache[cache_key] = expanded
     return expanded
@@ -970,12 +1014,23 @@ class CSVLcaClient(LCADataProvider):
         #   - Rimuove contenuti di contenitori (acqua, vino…)
         #   - Estrae l'identità chimica core (PVC, PET, polypropylene…)
         #   - Deduce la classe geometrica (profile, hollow, flat, solid…)
-        norm_result: NormalizationResult = _semantic_normalizer.normalize(actual_label)
-        normalized_label = norm_result.base_material
-        geometry_hint   = norm_result.geometry_hint
+        #
+        # IMPORTANTE: la normalizzazione è pensata SOLO per i MATERIALI. Applicarla
+        # a una query di PROCESSO la corrompe: es. "extrusion, plastic film" contiene
+        # "film" → geometria "flat" → materiale default "polyethylene", trasformando
+        # la ricerca del processo in una ricerca del materiale (→ nessun match, fallback
+        # generico 1.0). Per processi/trasporti usiamo quindi l'etichetta grezza.
+        if entity_type == "material":
+            norm_result: NormalizationResult = _semantic_normalizer.normalize(actual_label)
+            normalized_label = norm_result.base_material
+            geometry_hint   = norm_result.geometry_hint
+        else:
+            normalized_label = actual_label
+            geometry_hint = None
+            norm_result = None
 
-        # Log auditabile della normalizzazione
-        if normalized_label.lower() != actual_label.lower().strip():
+        # Log auditabile della normalizzazione (solo per i materiali normalizzati)
+        if norm_result is not None and normalized_label.lower() != actual_label.lower().strip():
             logger.debug(
                 "[NORMALIZER] '%s' -> base_material='%s'%s%s%s%s",
                 actual_label, normalized_label,
@@ -1327,7 +1382,7 @@ class CSVLcaClient(LCADataProvider):
 
             # --- PATCH: Domain Filter for Waste/Disposal (Bug 3) ---
             if not has_transport:
-                _WASTE_BLACKLIST = {"waste", "lumps", "scrap", "disposal", "treatment of", "landfill", "incineration"}
+                _WASTE_BLACKLIST = {"waste", "lumps", "scrap", "disposal", "treatment of", "landfill", "incineration", "fines"}
                 _orig_label_lower_check = original_label.lower()
                 # If the user did not explicitly ask for a waste process, do not match waste records
                 if not any(w in _orig_label_lower_check for w in _WASTE_BLACKLIST):

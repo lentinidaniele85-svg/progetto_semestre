@@ -98,7 +98,8 @@ async def workflow_bom_ideator(state: AgentState) -> dict:
     )
 
     # T05: Step 2 — Lookup Aggregato
-    llm = ModelFactory.get_model(max_tokens=1500)
+    # 3000 token: headroom per BOM multi-componente senza troncare il JSON strutturato.
+    llm = ModelFactory.get_model(max_tokens=3000)
     constraints = dict(state.get("constraints", {}))
     
     def map_geo(g):
@@ -347,13 +348,13 @@ ALWAYS ensure:
         for comp_data in result.components or []:
             comp = comp_data.model_dump()
             
-            # --- PATCH: Geometric Matrix Override ---
+            # ui_lower serve al ProcessMapper più sotto (rilevamento film/pellicola).
+            # NOTA: il vecchio "Geometric Matrix Override" è stato rimosso da qui perché
+            # veniva sistematicamente sovrascritto dal ProcessMapper tassonomico (clobbering).
+            # Tutta la logica geometria→processo è ora centralizzata e geometria-consapevole
+            # nel ProcessMapper sotto (single source of truth), incl. film ed estrusione alluminio.
             ui_lower = str(state.get("user_input", "")).lower()
-            if any(w in ui_lower for w in ["pellicola", "film", "sacchetto", "sacchetti", "flexible"]):
-                comp["manufacturing_process"] = "extrusion, plastic film"
-            if any(w in ui_lower for w in ["alluminio", "aluminium", "barra", "profilo", "estruso"]) and comp.get("geometry") == "Profili/Tubi":
-                comp["manufacturing_process"] = "aluminium extrusion"
-                
+
             # Applica proporzione al peso se necessaria
             if fallback_weight_per_comp is not None:
                 comp["weight_kg"] = round(fallback_weight_per_comp, 4)
@@ -467,12 +468,28 @@ ALWAYS ensure:
                     process_name = "electronic component production, wafer fabrication"
 
                 # 2. CATEGORIA POLIMERI E COMPOSITI (Plastiche e strutture leggere)
+                # Il processo dipende dalla GEOMETRIA, non è sempre injection moulding
+                # (corretto solo per pezzi pieni). Un sacchetto in pellicola si produce
+                # per ESTRUSIONE di film, non per stampaggio a iniezione. Tutti i processi
+                # sotto sono verificati presenti nel dataset_ecoinvent_perfetto.xlsx (Europe).
                 elif any(w in mat_lower for w in ["plastic", "pet", "hdpe", "pvc", "pp", "abs", "poly", "carbon fiber", "carbon fibre", "epoxy", "resin", "fiberglass"]):
-                    process_name = "injection moulding"
+                    if "film" in geom_lower or any(w in ui_lower for w in ["pellicola", "film", "sacchetto", "sacchetti", "flexible"]):
+                        process_name = "extrusion, plastic film"
+                    elif "corpi cavi" in geom_lower:
+                        process_name = "blow moulding"
+                    elif "profili" in geom_lower or "tubi" in geom_lower:
+                        process_name = "extrusion, plastic pipe"
+                    else:
+                        process_name = "injection moulding"
 
                 # 3. CATEGORIA METALLI (Ferrosi e non ferrosi)
                 elif any(w in mat_lower for w in ["metal", "steel", "iron", "aluminium", "aluminum", "copper", "titanium", "brass", "alluminio", "acciaio", "rame"]):
-                    process_name = "metal working"
+                    # Alluminio in barre/profili/tubi → ESTRUSIONE (termine ecoinvent reale
+                    # 'extrusion of aluminium', 24 record), non 'metal working' generico.
+                    if any(w in mat_lower for w in ["aluminium", "aluminum", "alluminio"]) and ("profili" in geom_lower or "tubi" in geom_lower):
+                        process_name = "extrusion of aluminium"
+                    else:
+                        process_name = "metal working"
 
                 # 4. CATEGORIA MATERIALI BIO-BASED E LEGNO (Arredamento e bio-packaging)
                 elif any(w in mat_lower for w in ["wood", "legno", "timber", "bamboo", "paper", "carta", "cardboard", "cartone"]):

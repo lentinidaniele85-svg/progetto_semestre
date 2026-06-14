@@ -18,9 +18,11 @@ class ModelFactory:
 
     @staticmethod
     def get_model(max_tokens: int | None = None) -> BaseChatModel:
-        # Applica il cap dinamico richiesto dal chiamante, con default di sicurezza a 1500
-        # per evitare l'errore 402 di OpenRouter (riserva di credito insufficiente)
-        actual_max_tokens = max_tokens if max_tokens is not None else 1500
+        # Applica il cap dinamico richiesto dal chiamante, con default a 2048.
+        # NB: max_tokens è un TETTO sulla risposta, non un costo fisso: si paga solo
+        # l'output realmente generato. Tenuto moderato per non gonfiare la riserva di
+        # credito che OpenRouter blocca a monte di ogni richiesta (causa storica del 402).
+        actual_max_tokens = max_tokens if max_tokens is not None else 2048
         cache_key = f"{settings.llm_provider}:{settings.openrouter_model}:{actual_max_tokens}"
         if cache_key not in _model_cache:
             _model_cache[cache_key] = ChatOpenAI(
