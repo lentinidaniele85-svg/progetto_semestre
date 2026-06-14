@@ -107,14 +107,25 @@ def constraint_extractor(state: AgentState) -> dict:
                 "2. NO LANGUAGE BIAS: The language of the prompt (Italian, English, French, etc.) DOES NOT imply the production location. NEVER infer 'geography' or 'supplier_country' based on the language. If the country/geography is not explicitly named (e.g., 'in Italia', 'produced in Germany'), the field MUST remain null.\n"
                 "3. NO DOMAIN INFERENCE: Do not guess the 'usage_environment' based on the material. Even if construction PVC pipes are typically used outdoors, if the user does not explicitly write 'outdoor', 'esterno' or similar, the field MUST remain null.\n\n"
                 "GEOGRAPHY RULES:\n"
-                "- 'geography': the PRODUCTION/ASSEMBLY location (where the product is made).\n"
+                "- 'geography': the PRODUCTION/MANUFACTURING location (where the product is MADE).\n"
+                "  This is NEVER the shipping/delivery destination. It drives the ecoinvent dataset location.\n"
                 "- 'supplier_country': the ORIGIN of the main raw material (where it comes from).\n"
-                "- 'destination_country': the DELIVERY destination (if different from geography).\n"
+                "- 'destination_country': the DELIVERY destination (where it is shipped TO).\n"
+                "- CRITICAL: if the user says 'prodotto in X, trasportato/spedito in Y'\n"
+                "  (e.g. 'profilati prodotti in Cina ... fino in Italia'):\n"
+                "    geography='X' (China — where it is produced), destination_country='Y' (Italy — delivery).\n"
+                "    NEVER set geography to the destination Y. The product is made in X, so geography=X.\n"
                 "- If the user says 'materiale da Country_A, assemblato in Country_B':\n"
                 "    geography='Country_B', supplier_country='Country_A'\n"
                 "- If the user says 'prodotto in Region_X' with no material origin:\n"
                 "    geography='Region_X', supplier_country=None (to be asked)\n\n"
                 "MASS RULE: Extract 'mass' ONLY if explicitly stated (e.g., '1 kg', '5 tonnes').\n"
+                "The 'mass' value MUST ALWAYS be expressed in KILOGRAMS (kg). You MUST convert other units:\n"
+                "  - grams → kg: '360 grammi'/'360 g' → 0.36 ; '500 g' → 0.5 ; '50 g' → 0.05\n"
+                "  - milligrams → kg: '500 mg' → 0.0005\n"
+                "  - tonnes → kg: '5 tonnellate'/'5 t' → 5000 ; '0.5 t' → 500\n"
+                "It is STRICTLY FORBIDDEN to output the raw number when the unit is grams/mg/tonnes — convert it to kg FIRST.\n"
+                "Example: 'racchetta da 360 grammi' → mass=0.36 (NOT 360).\n"
                 "Do NOT infer mass from product type.\n\n"
                 "TASK TYPE: 'modeling' if user wants to calculate/model impact. "
                 "'optimization' if user wants alternatives/improvements.\n\n"
@@ -269,6 +280,7 @@ async def lca_validator(state: AgentState) -> dict:
             # specularmente alle righe Materiale e Trasporto. None se la manifattura
             # è saltata (is_material_only) o se non c'è match DB (si userà il label).
             manufacturing_ecoinvent_name = None
+            manufacturing_ecoinvent_id = None  # id ecoinvent del record di processo (per audit ID)
 
             # Gate condizionale per i materiali sfusi (grezzi): se il
             # componente è is_material_only=True (o manca processo/geometria),
@@ -309,6 +321,7 @@ async def lca_validator(state: AgentState) -> dict:
                     process_impact = proc_match["environmental_impact"]
                     process_uom = proc_match.get("unit_of_measure", "kg")
                     manufacturing_ecoinvent_name = proc_match.get("providerName")  # Anomalia A
+                    manufacturing_ecoinvent_id = proc_match.get("id")  # id ecoinvent del processo
                     thought_log.append(f"[LCA Validation] Processo '{proc_query}' associato al record: {proc_match.get('providerName', '?')}")
                 else:
                     _fallback_key = process_name.lower()
@@ -603,9 +616,14 @@ async def lca_validator(state: AgentState) -> dict:
                     "scores": scores,
                     # processName ecoinvent dell'alternativa (per audit LCA)
                     "ecoinvent_process_name": alt_ecoinvent_process_name,
+                    # id ecoinvent dell'alternativa (per la sezione Riferimenti ID)
+                    "ecoinvent_id": alt_match.get("id"),
                 })
 
             task_type = (state.get("constraints") or {}).get("task_type", "optimization")
+            # id ecoinvent del materiale baseline: dal find (orig_match["id"]) oppure,
+            # se è stato usato il record DB pre-selezionato, il db_index È l'id stesso.
+            baseline_material_id = orig_match.get("id") or db_index
             if task_type == "modeling":
                 lca_results.append({
                     "component_name": f"{component_name} (Material)",
@@ -614,6 +632,7 @@ async def lca_validator(state: AgentState) -> dict:
                     "alternatives": alt_results,
                     # processName ecoinvent del materiale baseline (per audit LCA)
                     "ecoinvent_process_name": baseline_ecoinvent_process_name,
+                    "ecoinvent_id": baseline_material_id,
                     "ecoinvent_details": {
                         "providerName": orig_match.get("providerName", "?"),
                         "location": orig_match.get("location", ""),
@@ -638,6 +657,7 @@ async def lca_validator(state: AgentState) -> dict:
                     "ecoinvent_process_name": (
                         manufacturing_ecoinvent_name or process_name
                     ) if process_name != "none" else None,
+                    "ecoinvent_id": manufacturing_ecoinvent_id if process_name != "none" else None,
                 })
             else:
                 orig_scores_mat["environmental_impact"] = mat_total_impact + proc_total_impact
@@ -650,6 +670,7 @@ async def lca_validator(state: AgentState) -> dict:
                     "alternatives": alt_results,
                     # processName ecoinvent del materiale baseline (per audit LCA)
                     "ecoinvent_process_name": baseline_ecoinvent_process_name,
+                    "ecoinvent_id": baseline_material_id,
                     # Anomalia A: in optimization la fase manifattura è ripiegata in
                     # questo unico componente. Persistiamo qui il processo + il suo
                     # nome ecoinvent così il report può renderla come riga a sé,
@@ -659,12 +680,14 @@ async def lca_validator(state: AgentState) -> dict:
                     "manufacturing_ecoinvent_process_name": (
                         manufacturing_ecoinvent_name or process_name
                     ) if process_name != "none" else None,
+                    "manufacturing_ecoinvent_id": manufacturing_ecoinvent_id if process_name != "none" else None,
                 })
 
         # ── PATCH MIXED LOGISTICS ──
         transport_impact_total = 0.0
         total_tkm = 0.0
         transport_providers = []
+        transport_ids = []  # id ecoinvent dei record di trasporto matchati (per audit ID)
         
         constraints = state.get("constraints") or {}
         global_mode = constraints.get("transport_mode")
@@ -715,6 +738,8 @@ async def lca_validator(state: AgentState) -> dict:
                     c_factor = transp_match["environmental_impact"]
                     t_name = transp_match.get("flowName") or transp_match.get("providerName") or "?"
                     transport_providers.append(t_name)
+                    if transp_match.get("id"):
+                        transport_ids.append(transp_match.get("id"))
                     thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' associato al record: {transp_match.get('providerName', '?')}")
                 else:
                     c_factor = SHIP_IMPACT_PER_TKM if "sea" in comp_mode else (AIRCRAFT_IMPACT_PER_TKM if "aircraft" in comp_mode else TRANSPORT_IMPACT_PER_TKM)
@@ -756,6 +781,8 @@ async def lca_validator(state: AgentState) -> dict:
             },
             "alternatives": [],
             "ecoinvent_process_name": transport_name,
+            # id ecoinvent dei record di trasporto (può essere multiplo se più tratte)
+            "ecoinvent_id": ", ".join(list(dict.fromkeys(transport_ids))) if transport_ids else None,
         })
 
         task_type = (state.get("constraints") or {}).get("task_type", "optimization")

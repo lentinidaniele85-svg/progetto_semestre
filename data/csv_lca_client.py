@@ -692,6 +692,38 @@ async def generate_search_queries(material_name: str, entity_type: str = "materi
                 t for t in expanded if t.strip().lower() not in (_eco_pe, "polyethylene")
             ]
 
+        # ── ROBUSTEZZA 'glass' ───────────────────────────────────────────────
+        # 'glass' generico è ambiguo: il dataset ha decine di record glass (cullet,
+        # foam, fibre, CRT, "sewage from glass production"...) e NESSUN "glass production"
+        # generico, quindi il match resta sul filo della soglia 0.85 (a volte passa,
+        # a volte STRICT FAIL a seconda dei termini dell'LLM). Aggiungiamo i record di
+        # PRODUZIONE forti come termini ad alto score (match esatto sull'activity core).
+        # Esclusi glass fibre/wool, che sono materiali diversi con i loro record.
+        if "glass" in _ml and not any(w in _ml for w in ["fibre", "fiber", "wool"]):
+            _glass_strong = ["flat glass production", "packaging glass production"]
+            _excl = {"glass", *(s.lower() for s in _glass_strong)}
+            expanded = ["glass"] + _glass_strong + [
+                t for t in expanded if t.strip().lower() not in _excl
+            ]
+
+        # ── GARANZIA SOSTANTIVO PRIMARIO (fix generale tipo HDPE/steel) ───────
+        # I record ecoinvent usano il SOSTANTIVO puro ("steel, unalloyed",
+        # "aluminium alloy production", "market for copper"). L'LLM a volte
+        # restituisce forme aggettivo-davanti ("carbon steel", "stainless steel")
+        # che NON sono sottostringa di quei record: l'identity guard (search_terms[0])
+        # fallisce e genera un FALSO STRICT FAIL su un materiale presente. Se il
+        # materiale è un SOSTANTIVO SINGOLO (es. 'steel', 'aluminium', 'copper',
+        # 'glass', 'iron', 'brass') OPPURE un nome composto la cui forma pulita È
+        # comunque sottostringa del record ecoinvent (es. 'carbon fibre' →
+        # 'carbon fibre reinforced plastic'), lo forziamo come termine PRIMARIO.
+        # UNICA eccezione: le varianti di densità del PE (HDPE/LDPE), dove ecoinvent
+        # RIORDINA le parole ('polyethylene, high density') e il nome pulito NON è
+        # sottostringa: lì comanda il density-guard sopra, quindi le saltiamo.
+        _mn = material_name.strip().lower()
+        _pe_density = ("density" in _mn) or bool(re.search(r"\b(hdpe|ldpe|lldpe)\b", _mn))
+        if _mn and not _pe_density:
+            expanded = [_mn] + [t for t in expanded if t.strip().lower() != _mn]
+
     _llm_expansion_cache[cache_key] = expanded
     return expanded
 
@@ -1329,7 +1361,48 @@ class CSVLcaClient(LCADataProvider):
             score_out = max((get_base_score(term, out_name) for term in search_terms), default=0.0)
             score_proc = max((get_base_score(term, proc_name) for term in search_terms), default=0.0)
             score = max(score_out, score_proc)
-            
+
+            # ── PENALITÀ COMPOSTI CHIMICI PER METALLI PURI ───────────────────
+            # Se la query è un METALLO PURO ('aluminium', 'copper', 'iron'...), i
+            # record di COMPOSTI chimici (aluminium SULFATE, copper OXIDE, iron
+            # CHLORIDE...) NON sono il materiale richiesto: sono sostanze diverse,
+            # spesso con impatto bassissimo (es. solfato di alluminio 0.5 vs lega 7.6).
+            # Senza questo, il noun-guard ('aluminium' primario) può agganciarli.
+            _orig_metal = original_label.strip().lower()
+            _PURE_METALS = {
+                "aluminium", "aluminum", "alluminio", "steel", "acciaio", "iron",
+                "ferro", "cast iron", "ghisa", "copper", "rame", "zinc", "zinco",
+                "brass", "ottone", "titanium", "titanio", "nickel", "lead", "piombo",
+                "tin", "stagno", "bronze", "bronzo",
+            }
+            _METAL_COMPOUND_SIGNALS = (
+                "sulfate", "sulphate", "chloride", "hydroxide", "oxide", "nitrate",
+                "carbonate", "sulfide", "sulphide", "phosphate", "silicate",
+                "fluoride", "acetate",
+            )
+            if _orig_metal in _PURE_METALS and not any(c in _orig_metal for c in _METAL_COMPOUND_SIGNALS):
+                if any(c in name_combined for c in _METAL_COMPOUND_SIGNALS):
+                    score -= 0.8
+                    logger.debug("[METAL] Penalità -0.8 a '%s' (composto chimico per query metallo puro '%s')", row['outputname'], _orig_metal)
+
+                # Fedeltà cross-metallo: se l'ATTIVITÀ principale del record è la
+                # produzione/estrazione di un metallo DIVERSO (es. 'cobalt production'
+                # per una query 'copper' — il rame è solo co-prodotto), penalizza:
+                # evita che la query agganci il metallo sbagliato.
+                _METAL_WORDS = (
+                    "aluminium", "aluminum", "steel", "iron", "copper", "zinc",
+                    "cobalt", "nickel", "lead", "tin", "gold", "silver", "titanium",
+                    "chromium", "manganese", "platinum", "bronze", "brass",
+                )
+                _query_mw = next((w for w in _METAL_WORDS if w in _orig_metal), None)
+                _proc_core = proc_name.split(",")[0]
+                if "production" in _proc_core or "mine" in _proc_core:
+                    for _mw in _METAL_WORDS:
+                        if _mw != _query_mw and _mw in _proc_core:
+                            score -= 0.6
+                            logger.debug("[METAL] Penalità -0.6 a '%s' (attività di un metallo diverso da '%s')", row['outputname'], _orig_metal)
+                            break
+
             # Penalità/Bonus Industriale
             if any(term in name_combined for term in ["bark", "sawdust", "shavings"]) and not any(term in original_label for term in ["bark", "sawdust", "shavings"]):
                 score -= 0.2

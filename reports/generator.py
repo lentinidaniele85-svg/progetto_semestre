@@ -355,6 +355,76 @@ def generate_html_report(state: dict) -> str:
             "</table>"
         )
 
+    def _ecoinvent_id_references() -> str:
+        """Sezione 'per esperti': l'ID ecoinvent (colonna 'id' del dataset) di OGNI
+        record usato nel calcolo — materiale originale, processo, alternative e
+        trasporto. Permette di incollare l'id nel database ecoinvent e ritrovare
+        l'attività esatta. Tracciabilità completa per chi sa cosa cercare."""
+
+        def _id_row(component: str, tipo: str, name: str, ecoid: str, highlight: bool = False) -> str:
+            bg = " style='background:#f0fff4;'" if highlight else ""
+            return (
+                f"<tr{bg}>"
+                f"<td>{component}</td>"
+                f"<td>{tipo}</td>"
+                f"<td>{name}</td>"
+                f"<td style=\"font-family:monospace; font-size:0.82em; word-break:break-all;\">{ecoid}</td>"
+                "</tr>"
+            )
+
+        rows = ""
+        for r in lca_results:
+            comp = r.get("component_name", "—")
+            if comp == "Transport":
+                tipo = "Trasporto"
+            elif comp.endswith("(Manufacturing)"):
+                tipo = "Processo"
+            else:
+                tipo = "Materiale"
+
+            # Riga principale (materiale / processo modeling / trasporto)
+            eid = r.get("ecoinvent_id")
+            if eid:
+                rows += _id_row(comp, tipo, r.get("ecoinvent_process_name", "—"), eid)
+
+            # Processo manifattura ripiegato nel componente (modalità optimization)
+            mfg_id = r.get("manufacturing_ecoinvent_id")
+            if mfg_id:
+                rows += _id_row(
+                    f"{comp} (manuf.)", "Processo",
+                    r.get("manufacturing_ecoinvent_process_name", "—"), mfg_id,
+                )
+
+            # Alternative (materiale ottimizzato): nome + id, evidenziate in verde
+            for alt in r.get("alternatives", []):
+                aid = alt.get("ecoinvent_id")
+                if aid:
+                    rows += _id_row(
+                        f"{comp} (alt.)", "Alternativa",
+                        alt.get("ecoinvent_process_name", alt.get("name", "—")), aid,
+                        highlight=True,
+                    )
+
+        if not rows:
+            return ""
+        return (
+            "<h2>&#128273; Riferimenti ID Ecoinvent <span style='font-size:0.6em; color:#888; font-weight:400;'>(sezione per esperti)</span></h2>"
+            "<p style='font-size:0.88em; color:#555; margin-bottom:12px;'>"
+            "ID univoco (colonna <code>id</code> del dataset ecoinvent) di ogni record usato nel calcolo: "
+            "materiale originale, processo manifatturiero, alternative ottimizzate e trasporto. "
+            "Incolla un id nel database ecoinvent per ritrovare l'attivit&agrave; esatta."
+            "</p>"
+            "<table>"
+            "<thead><tr>"
+            "<th>Componente</th>"
+            "<th>Tipo</th>"
+            "<th>Nome Ecoinvent</th>"
+            "<th>ID Ecoinvent</th>"
+            "</tr></thead>"
+            f"<tbody>{rows}</tbody>"
+            "</table>"
+        )
+
     def _assumptions_list() -> str:
         constraints = state.get("constraints", {})
         html = ""
@@ -601,6 +671,8 @@ def generate_html_report(state: dict) -> str:
 </div>
 
 {_matched_processes_section()}
+
+{_ecoinvent_id_references()}
 
 <footer>
   Sustainable Product Optimization Agent &nbsp;&middot;&nbsp; LangGraph pipeline &nbsp;&middot;&nbsp; {generated_at}
