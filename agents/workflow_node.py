@@ -98,7 +98,7 @@ async def workflow_bom_ideator(state: AgentState) -> dict:
     )
 
     # T05: Step 2 — Lookup Aggregato
-    llm = ModelFactory.get_model(max_tokens=4000)
+    llm = ModelFactory.get_model(max_tokens=1500)
     constraints = dict(state.get("constraints", {}))
     
     def map_geo(g):
@@ -347,6 +347,13 @@ ALWAYS ensure:
         for comp_data in result.components or []:
             comp = comp_data.model_dump()
             
+            # --- PATCH: Geometric Matrix Override ---
+            ui_lower = str(state.get("user_input", "")).lower()
+            if any(w in ui_lower for w in ["pellicola", "film", "sacchetto", "sacchetti", "flexible"]):
+                comp["manufacturing_process"] = "extrusion, plastic film"
+            if any(w in ui_lower for w in ["alluminio", "aluminium", "barra", "profilo", "estruso"]) and comp.get("geometry") == "Profili/Tubi":
+                comp["manufacturing_process"] = "aluminium extrusion"
+                
             # Applica proporzione al peso se necessaria
             if fallback_weight_per_comp is not None:
                 comp["weight_kg"] = round(fallback_weight_per_comp, 4)
@@ -415,11 +422,27 @@ ALWAYS ensure:
                     # Geographic fallback usato dal provider — solo warning, non crash
                     display_loc_found = map_geo(loc_found)
                     display_geography = map_geo(geography)
+                    
+                    if not display_loc_found:
+                        display_loc_found = "Globale/Non Specificato"
+                        
                     geo_note = (
                         f"Nota: per '{mat}' richiesta geografia '{display_geography}', "
                         f"usato proxy geografico '{display_loc_found}' dal database."
                     )
-                    assumptions.append(geo_note)
+                    already_exists = False
+                    for i, a in enumerate(assumptions):
+                        if f"Nota: per '{mat}'" in a and "proxy geografico" in a:
+                            old_is_regional = "Europe" in a or "RER" in a
+                            new_is_global = "Globale" in geo_note or "Rest of World" in geo_note or "Rest-of-World" in geo_note
+                            if old_is_regional and new_is_global:
+                                already_exists = True
+                            else:
+                                assumptions[i] = geo_note
+                                already_exists = True
+                            break
+                    if not already_exists:
+                        assumptions.append(geo_note)
                     logger.info(geo_note)
 
                 idx = best_match.get("index", "?")
@@ -542,7 +565,22 @@ ALWAYS ensure:
 
         # Aggiungi assunzioni LLM alle nostre
         if result.assumptions_made:
-            assumptions.extend(result.assumptions_made)
+            user_input_lower = state.get("user_input", "").lower()
+            macro_categories = ['plastica', 'plastic', 'metallo', 'metal', 'legno', 'wood']
+            
+            modified_assumptions = []
+            for assumption in result.assumptions_made:
+                if "Materiale non specificato" in assumption or "Material not specified" in assumption:
+                    found_macro = next((m for m in macro_categories if m in user_input_lower), None)
+                    if found_macro and result.components:
+                        mat_spec = result.components[0].material
+                        new_assumption = f"L'utente ha specificato la macro-categoria '{found_macro}'. Ho selezionato '{mat_spec}' come standard industriale di riferimento."
+                        modified_assumptions.append(new_assumption)
+                    else:
+                        modified_assumptions.append(assumption)
+                else:
+                    modified_assumptions.append(assumption)
+            assumptions.extend(modified_assumptions)
 
         # Nota: ecoinvent usa "Europe without Switzerland" come codice regionale europeo.
         # Nessuna sostituzione automatica di nomi di paesi nelle assunzioni.

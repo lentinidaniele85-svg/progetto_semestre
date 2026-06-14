@@ -758,7 +758,7 @@ def _get_regional_bin(canonical_location: str) -> List[str]:
     if not loc or loc.lower() in ("global", "rest-of-world", "glo", "row"):
         return ["Global", "Rest-of-World"]
     if any(loc.lower() == ec.lower() for ec in _EUROPEAN_CODES):
-        return ["Europe without Switzerland", "Global", "Rest-of-World"]
+        return ["Europe", "RER", "Europe without Switzerland", "Global", "Rest-of-World"]
     return ["Global", "Rest-of-World"]
 
 def _get_geometry(name: str) -> Optional[str]:
@@ -804,6 +804,28 @@ def _parse_ecoinvent_name(raw: str) -> tuple[str, str, str]:
         product = raw
         location = ""
     return activity_core, product, location
+
+
+def _has_word_boundary_match(term: str, target: str) -> bool:
+    """Verifica se *term* compare in *target* rispettando i confini di parola.
+
+    Logica (preservata dal precedente helper inline in _search_best_match):
+      - term corto (<= 3 caratteri, es. 'pp', 'pe', 'abs'): match con word
+        boundary `\\b...\\b` per isolare acronimi/codici materiale puri ed
+        evitare falsi positivi interni a parole più lunghe (es. 'pp' dentro
+        'shopping', 'pe' dentro 'polyethylene').
+      - term lungo (> 3 caratteri): semplice substring match, meno ambiguo.
+
+    NOTA: usa nativamente il modulo standard `re` (importato a inizio file).
+    Sostituisce il riferimento all'oggetto inesistente `_re_match` che
+    sollevava NameError quando il primo/uno dei search_terms era <= 3 char.
+    term e target sono già normalizzati a lowercase dai chiamanti, quindi
+    nessun flag IGNORECASE è necessario (comportamento case-sensitive invariato).
+    """
+    if len(term) <= 3:
+        pattern = r"\b" + re.escape(term) + r"\b"
+        return bool(re.search(pattern, target))
+    return term in target
 
 
 class CSVLcaClient(LCADataProvider):
@@ -1189,19 +1211,11 @@ class CSVLcaClient(LCADataProvider):
 
             # GARANZIA DI IDENTITÀ (Ticket 2)
             primary_term = search_terms[0].lower()
-            
-            # Helper to check if a term matches a string with word boundaries
-            def has_word_boundary_match(term: str, target: str) -> bool:
-                if len(term) <= 3:
-                    # usa word-boundary match per stringhe <= 3 caratteri come "PP" o "PE"
-                    pattern = r"\b" + _re_match.escape(term) + r"\b"
-                    return bool(_re_match.search(pattern, target))
-                else:
-                    return term in target
-            
+
             # primary_term must appear in out_name OR proc_name
-            matches_primary_out = has_word_boundary_match(primary_term, out_name)
-            matches_primary_proc = has_word_boundary_match(primary_term, proc_name)
+            # (word-boundary match per acronimi corti — vedi _has_word_boundary_match)
+            matches_primary_out = _has_word_boundary_match(primary_term, out_name)
+            matches_primary_proc = _has_word_boundary_match(primary_term, proc_name)
 
             if not (matches_primary_out or matches_primary_proc):
                 # Fallback esteso: controlla i primi 3 search_terms su ENTRAMBE le
@@ -1209,7 +1223,7 @@ class CSVLcaClient(LCADataProvider):
                 # Strict Mode quando il termine è presente solo nel processName.
                 matched_any_fallback = False
                 for t in search_terms[:3]:
-                    if has_word_boundary_match(t, out_name) or has_word_boundary_match(t, proc_name):
+                    if _has_word_boundary_match(t, out_name) or _has_word_boundary_match(t, proc_name):
                         matched_any_fallback = True
                         break
                 if not matched_any_fallback:
@@ -1307,6 +1321,20 @@ class CSVLcaClient(LCADataProvider):
                 else:
                     score += 0.2 # Standard bonus
                 
+            if "lorry" in name_combined or "truck" in name_combined or "camion" in name_combined:
+                score += 0.4
+                logger.debug("[LOGISTICS] Bonus +0.4 a '%s' (Bypass length penalty for lorry transport)", row['outputname'])
+
+            # --- PATCH: Domain Filter for Waste/Disposal (Bug 3) ---
+            if not has_transport:
+                _WASTE_BLACKLIST = {"waste", "lumps", "scrap", "disposal", "treatment of", "landfill", "incineration"}
+                _orig_label_lower_check = original_label.lower()
+                # If the user did not explicitly ask for a waste process, do not match waste records
+                if not any(w in _orig_label_lower_check for w in _WASTE_BLACKLIST):
+                    if any(w in name_combined for w in _WASTE_BLACKLIST):
+                        continue # Forzatura esclusione: ignora questo record
+            # -------------------------------------------------------
+
             if any(term in name_combined for term in penalty_terms):
                 # Se geometry_hint corrisponde al tipo del record, NON penalizzare:
                 # es. "tubo in PVC" ha geometry_hint='profile' → il record "pipe" è corretto
@@ -1324,6 +1352,11 @@ class CSVLcaClient(LCADataProvider):
                 if any(kw in name_combined for kw in hint_keywords):
                     score += 0.15
                     logger.debug("[GEOMETRY] Bonus +0.15 a '%s' (geometry_hint='%s' confermato)", row['outputname'], geometry_hint)
+
+            # Bonus per la logistica su gomma (Bypass length penalty)
+            if "transport, freight, lorry" in name_combined and any(kw in " ".join(search_terms) for kw in ["lorry", "truck", "camion", "road"]):
+                score += 0.4
+                logger.debug("[LOGISTICS] Bonus +0.4 a '%s' (Bypass length penalty for lorry transport)", row['outputname'])
 
             # DIRETTIVA 1: Score Modifier Contestuale
             # Agisce SOLO sullo score — non elimina il record dal pool candidati.
@@ -1546,4 +1579,7 @@ class CSVLcaClient(LCADataProvider):
             "cost_per_kg":          cost,
             "unit_of_measure":      self._get_unit_of_measure(r),
             "lifespan_years":       10.0,
+            "providerName":         r["processname"],
+            "location":             r["location"],
+            "index":                r.name + 2,
         }

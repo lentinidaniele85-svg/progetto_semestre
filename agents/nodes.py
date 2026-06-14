@@ -263,6 +263,12 @@ async def lca_validator(state: AgentState) -> dict:
             # sotto SOLO se troviamo un match dinamico nel DB con UOM diversa
             # (vedi _resolve_scale_factor / colonna 'unitOfMeasure').
             process_uom = "kg"
+            # Anomalia A: nome ecoinvent COMPLETO del record di processo matchato
+            # (es. "injection moulding"). Persistito nello stato per essere reso
+            # nella tabella di audit "Processi Ecoinvent Matchati" del report HTML,
+            # specularmente alle righe Materiale e Trasporto. None se la manifattura
+            # è saltata (is_material_only) o se non c'è match DB (si userà il label).
+            manufacturing_ecoinvent_name = None
 
             # Gate condizionale per i materiali sfusi (grezzi): se il
             # componente è is_material_only=True (o manca processo/geometria),
@@ -302,6 +308,7 @@ async def lca_validator(state: AgentState) -> dict:
                 if proc_match and proc_match.get("environmental_impact") is not None:
                     process_impact = proc_match["environmental_impact"]
                     process_uom = proc_match.get("unit_of_measure", "kg")
+                    manufacturing_ecoinvent_name = proc_match.get("providerName")  # Anomalia A
                     thought_log.append(f"[LCA Validation] Processo '{proc_query}' associato al record: {proc_match.get('providerName', '?')}")
                 else:
                     _fallback_key = process_name.lower()
@@ -386,17 +393,43 @@ async def lca_validator(state: AgentState) -> dict:
                     # Proxy geografico usato — solo warning, non crash
                     display_geo = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(geography.lower(), geography)
                     display_loc_found = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(loc_found.lower(), loc_found)
+                    
+                    if not display_loc_found:
+                        display_loc_found = "Globale/Non Specificato"
+                        
                     _geo_note = (
                         f"Nota: per '{original_material}' richiesta geografia '{display_geo}', "
                         f"usato proxy geografico '{display_loc_found}' dal database perché in '{display_geo}' non sono stati trovati dati primari/vergini."
                     )
-                    assumptions.append(_geo_note)
+                    already_exists = False
+                    for i, a in enumerate(assumptions):
+                        if f"Nota: per '{original_material}'" in a and "proxy geografico" in a:
+                            old_is_regional = "Europe" in a or "RER" in a
+                            new_is_global = "Globale" in _geo_note or "Rest of World" in _geo_note or "Rest-of-World" in _geo_note
+                            if old_is_regional and new_is_global:
+                                already_exists = True
+                            else:
+                                assumptions[i] = _geo_note
+                                already_exists = True
+                            break
+                    if not already_exists:
+                        assumptions.append(_geo_note)
                     logger.info(_geo_note)
 
                 idx = orig_match.get("index", "?")
                 provider_name = orig_match.get("providerName", "?")
+                loc_display = loc_found or orig_match.get("location", "")
+                # Anomalia C: se il match (es. percorso db_index) non porta i metadati
+                # descrittivi, li recuperiamo dal record reale via db_index così il
+                # thought_log mostra processName e location veri invece di "? - ? - -".
+                if (idx == "?" or provider_name == "?" or not loc_display) and db_index is not None:
+                    _rec = await provider.get_impact_scores(db_index)
+                    if _rec:
+                        idx = _rec.get("index", idx)
+                        provider_name = _rec.get("providerName", provider_name)
+                        loc_display = loc_display or _rec.get("location", "")
                 val_co2 = orig_match.get("environmental_impact", "?")
-                thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
+                thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_display} - {val_co2}")
 
                 mat_impact = orig_match["environmental_impact"]
                 # ── ESTRAZIONE processName BASELINE ─────────────────────────
@@ -498,11 +531,27 @@ async def lca_validator(state: AgentState) -> dict:
                         # Proxy geografico usato — solo warning, non crash
                         display_geo_alt = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(geography.lower(), geography)
                         display_loc_found_alt = {"it": "Italy", "fr": "France", "de": "Germany", "es": "Spain", "uk": "United Kingdom", "us": "United States", "rer": "Europe (RER)", "glo": "Global", "row": "Rest of World"}.get(loc_found_alt.lower(), loc_found_alt)
+                        
+                        if not display_loc_found_alt:
+                            display_loc_found_alt = "Globale/Non Specificato"
+
                         _geo_note_alt = (
                             f"Nota: per alternativa '{alt_name}' richiesta geografia '{display_geo_alt}', "
                             f"usato proxy geografico '{display_loc_found_alt}' dal database perché in '{display_geo_alt}' non sono stati trovati dati primari/vergini."
                         )
-                        assumptions.append(_geo_note_alt)
+                        already_exists = False
+                        for i, a in enumerate(assumptions):
+                            if f"Nota: per alternativa '{alt_name}'" in a and "proxy geografico" in a:
+                                old_is_regional = "Europe" in a or "RER" in a
+                                new_is_global = "Globale" in _geo_note_alt or "Rest of World" in _geo_note_alt or "Rest-of-World" in _geo_note_alt
+                                if old_is_regional and new_is_global:
+                                    already_exists = True
+                                else:
+                                    assumptions[i] = _geo_note_alt
+                                    already_exists = True
+                                break
+                        if not already_exists:
+                            assumptions.append(_geo_note_alt)
                         logger.info(_geo_note_alt)
 
                     idx_alt = alt_match.get("index", "?")
@@ -565,6 +614,11 @@ async def lca_validator(state: AgentState) -> dict:
                     "alternatives": alt_results,
                     # processName ecoinvent del materiale baseline (per audit LCA)
                     "ecoinvent_process_name": baseline_ecoinvent_process_name,
+                    "ecoinvent_details": {
+                        "providerName": orig_match.get("providerName", "?"),
+                        "location": orig_match.get("location", ""),
+                        "index": orig_match.get("index", "?"),
+                    }
                 })
                 lca_results.append({
                     "component_name": f"{component_name} (Manufacturing)",
@@ -578,6 +632,12 @@ async def lca_validator(state: AgentState) -> dict:
                         "lifespan_years": 10.0,
                     },
                     "alternatives": [],
+                    # Anomalia A: nome ecoinvent del processo (fallback al label se nessun
+                    # match DB). None per i materiali grezzi (process_name == "none"), così
+                    # la tabella di audit NON mostra una riga manifattura fittizia "none".
+                    "ecoinvent_process_name": (
+                        manufacturing_ecoinvent_name or process_name
+                    ) if process_name != "none" else None,
                 })
             else:
                 orig_scores_mat["environmental_impact"] = mat_total_impact + proc_total_impact
@@ -590,11 +650,21 @@ async def lca_validator(state: AgentState) -> dict:
                     "alternatives": alt_results,
                     # processName ecoinvent del materiale baseline (per audit LCA)
                     "ecoinvent_process_name": baseline_ecoinvent_process_name,
+                    # Anomalia A: in optimization la fase manifattura è ripiegata in
+                    # questo unico componente. Persistiamo qui il processo + il suo
+                    # nome ecoinvent così il report può renderla come riga a sé,
+                    # specularmente a Streamlit (Material / Manufacturing / Transport).
+                    # None se materiale grezzo (process_name == "none") → niente riga.
+                    "manufacturing_process_label": process_name if process_name != "none" else None,
+                    "manufacturing_ecoinvent_process_name": (
+                        manufacturing_ecoinvent_name or process_name
+                    ) if process_name != "none" else None,
                 })
 
         # ── PATCH MIXED LOGISTICS ──
         transport_impact_total = 0.0
         total_tkm = 0.0
+        transport_providers = []
         
         constraints = state.get("constraints") or {}
         global_mode = constraints.get("transport_mode")
@@ -643,9 +713,16 @@ async def lca_validator(state: AgentState) -> dict:
                 
                 if transp_match and transp_match.get("environmental_impact") is not None:
                     c_factor = transp_match["environmental_impact"]
+                    t_name = transp_match.get("flowName") or transp_match.get("providerName") or "?"
+                    transport_providers.append(t_name)
                     thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' associato al record: {transp_match.get('providerName', '?')}")
                 else:
                     c_factor = SHIP_IMPACT_PER_TKM if "sea" in comp_mode else (AIRCRAFT_IMPACT_PER_TKM if "aircraft" in comp_mode else TRANSPORT_IMPACT_PER_TKM)
+                    # Anomalia B: anche senza match DB usiamo la modalità normalizzata
+                    # reale (es. "transport, freight, lorry, unspecified") come etichetta,
+                    # NON il placeholder generico "Mixed Logistics". Così UI e report
+                    # mostrano sempre un nome di flusso descrittivo e identico.
+                    transport_providers.append(comp_mode)
                     thought_log.append(f"[LCA Validation] Trasporto '{comp_mode}' non trovato nel DB (nemmeno nei proxy), uso fallback.")
                 
                 component_transport_impact = c_tkm * c_factor
@@ -655,23 +732,30 @@ async def lca_validator(state: AgentState) -> dict:
                 component_transport_impact = 0
                 thought_log.append(f"[LCA Validation] Componente '{orig_comp.get('name')}': nessuna distanza specificata. Impatto trasporto extra impostato a 0 (incluso nel dataset 'market for').")
 
-        transport_name = "Mixed Logistics (Dinamicamente Calcolata)"
-        if total_tkm == 0:
-             transport_name = "Trasporto integrato nei dataset 'market' (nessun addizionale)"
+        # Anomalia B: nome trasporto = nomi reali dei flussi ecoinvent usati
+        # (deduplicati). transport_providers ora è SEMPRE popolato quando c'è
+        # trasporto (sia su match DB sia su fallback), quindi il placeholder
+        # "Mixed Logistics (Dinamicamente Calcolata)" è eliminato. Se non c'è
+        # trasporto (total_tkm == 0) resta la nota di logistica integrata.
+        if transport_providers:
+            transport_name = ", ".join(list(dict.fromkeys(transport_providers)))
+        else:
+            transport_name = "Trasporto integrato nei dataset 'market' (nessun addizionale)"
              
         lca_results.append({
             "component_name": "Transport",
             "original_material": transport_name,
             "original_scores": {
                 "environmental_impact": transport_impact_total,
-                "unit_material_impact": 0.0, # Già aggregato
+                "unit_material_impact": 0.0,
                 "energy_mj": 0.0,
                 "cost_tier": 1,
                 "cost_per_kg": 0.0,
                 "lifespan_years": 10.0,
-                "amount": total_tkm, # Supporto UI opzionale per quantità tkm
+                "amount": total_tkm,
             },
             "alternatives": [],
+            "ecoinvent_process_name": transport_name,
         })
 
         task_type = (state.get("constraints") or {}).get("task_type", "optimization")
@@ -838,7 +922,11 @@ async def human_feedback_processor(state: AgentState) -> dict:
                         "You are a product design analyst. The user just provided missing "
                         "information for a product (e.g., mass, geography, transport distance). "
                         "Extract these fields from the user's response. "
-                        "Return ONLY fields explicitly stated or strongly implied in the response."
+                        "Return ONLY fields explicitly stated or strongly implied in the response.\n\n"
+                        "CRITICAL RULES:\n"
+                        "1. Do NOT extract or change 'task_type' unless the user explicitly requests a change of intent (e.g. 'voglio ottimizzare', 'cambia in ottimizzazione'). If the user uses the word 'autonoma' or 'stima', it does NOT mean optimization.\n"
+                        "2. If the user mentions a number followed by 'km' (e.g. '600 km', '450km'), you MUST extract that number as 'distance_km'.\n"
+                        "3. If the user mentions 'camion' or 'truck', you MUST extract 'transport_mode': 'lorry'."
                     )
                 ),
                 HumanMessage(content=feedback),
@@ -852,7 +940,14 @@ async def human_feedback_processor(state: AgentState) -> dict:
                 current_constraints = dict(state.get("constraints", {}))
                 
                 if new_constraints:
+                    old_task_type = current_constraints.get("task_type")
                     current_constraints.update(new_constraints)
+                    
+                    if old_task_type and new_constraints.get("task_type") and new_constraints.get("task_type") != old_task_type:
+                        if not any(w in feedback.lower() for w in ["ottimizza", "ottimizzare", "optimize", "optimization", "cambia"]):
+                            current_constraints["task_type"] = old_task_type
+                            thought_log.append(f"Restored original task_type '{old_task_type}' (anti-hallucination protection).")
+                            
                     thought_log.append(f"Constraints actively updated from interview: {list(new_constraints.keys())}")
             except Exception as exc:
                 logger.warning(f"Failed to extract constraints from interview response: {exc}")

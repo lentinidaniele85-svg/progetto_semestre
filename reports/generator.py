@@ -304,7 +304,9 @@ def generate_html_report(state: dict) -> str:
         for r in lca_results:
             comp = r.get("component_name", "—")
             proc = r.get("ecoinvent_process_name", "")
-            if not proc:
+            # Guard difensivo: salta righe senza processo o con processo "none"
+            # (materiali grezzi senza manifattura) → niente righe di audit fittizie.
+            if not proc or str(proc).strip().lower() == "none":
                 continue
             orig_mat = r.get("original_material", "—")
             rows += (
@@ -312,6 +314,19 @@ def generate_html_report(state: dict) -> str:
                 f"<td>{orig_mat}</td>"
                 f"<td style='font-family:monospace; font-size:0.85em;'>{proc}</td></tr>"
             )
+            # Anomalia A: riga della LAVORAZIONE MANIFATTURIERA.
+            # In modalità optimization la fase manifattura è ripiegata nel singolo
+            # componente, quindi non comparirebbe come riga separata: la rendiamo qui
+            # leggendo i campi dedicati propagati da lca_validator, così l'audit mostra
+            # tutte e tre le fasi (Materiale, Manifattura, Trasporto) come in Streamlit.
+            mfg_proc = r.get("manufacturing_ecoinvent_process_name", "")
+            if mfg_proc and str(mfg_proc).strip().lower() != "none":
+                mfg_label = r.get("manufacturing_process_label") or "Manufacturing"
+                rows += (
+                    f"<tr><td>{comp} <em>(manuf.)</em></td>"
+                    f"<td>{mfg_label}</td>"
+                    f"<td style='font-family:monospace; font-size:0.85em;'>{mfg_proc}</td></tr>"
+                )
             # Also list alternatives if present
             for alt in r.get("alternatives", []):
                 alt_proc = alt.get("ecoinvent_process_name", "")

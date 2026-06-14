@@ -12,8 +12,10 @@ logger = logging.getLogger(__name__)
 async def material_ideator(state: AgentState) -> dict:
     thought_log = list(state.get("thought_log", []))
     thought_log.append("Esecuzione Material Ideator (Selezione Alternative Sostenibili)...")
+    is_italian = lambda text: any(char in 'àèéìòù' for char in text.lower())
+    is_ita = is_italian(state.get("user_input", ""))
 
-    llm = ModelFactory.get_model(max_tokens=4000)
+    llm = ModelFactory.get_model(max_tokens=2000)
     constraints = dict(state.get("constraints", {}))
     
     def map_geo(g):
