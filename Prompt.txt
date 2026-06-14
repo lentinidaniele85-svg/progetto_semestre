@@ -1,0 +1,57 @@
+Prompt
+
+Voglio modellare una sedia da interno in plastica.
+Pesa 8 kg, la produco in Germania e il materiale viaggia per 600 km su camion.
+
+-----------------------------------------------------------------------------------------------------
+
+Analisi dell'impatto ambientale di 200 kg di polistirene espanso (EPS) in Europa.
+
+-----------------------------------------------------------------------------------------------------
+Voglio ottimizzare un lotto di sacchetti in pellicola di polietilene (LDPE) da 15 kg. La produzione avviene in Francia e il trasporto prevede una tratta di 450 km su camion.
+
+
+-----------------------------------------------------------------------------------------------------
+Devo analizzare l'impatto di una barra a profilo continuo in alluminio estruso prodotta in Germania.
+
+Il profilo pesa 25 kg e la tratta di trasporto è di 150 km.
+
+
+---------------------------------------------------------------------------------------------------------
+
+"Voglio modellare un tubo rigido per l'edilizia in PVC"
+Il lotto pesa 50 kg, la produzione avviene in Germania e il materiale viaggia per 500 km su camion.
+
+--------------------------------------------------------------------------------------------------------
+Voglio ottimizzare l'impatto ambientale di un lotto di film in polivinilfluoruro. La produzione avviene negli United States of America.
+Il lotto ha un'altezza di spettro di 150 kg e il trasporto è di 300 km su camion.
+
+-------------------------------------------------------------------------------------------------------
+
+Analisi LCA per un lotto di 500 kg di profilati di alluminio, con un trasporto aggiuntivo di 1500 km effettuato tramite nave transoceanica cargo.
+
+----------------------------------------------------------------------------------------------------------
+
+Voglio ottimizzare l'impatto di un lotto di 200 kg di carta grafica riciclata. La produzione avviene in Polonia.
+
+---------------------------------------------------------------------------------------------------------
+
+Voglio modellare l'impatto di 10 kg di polipropilene (PP) stampato a iniezione in Europa senza trasporti personalizzati.
+
+---------------------------------------------------------------------------------------------------------
+Ottimizzazione ambientale di una racchetta da padel con telaio in fibra di carbonio prodotta in Italia.
+
+600 km, per la massa procedi pure con una stima autonoma.
+
+---------------------------------------------------------------------------------------------------------
+
+Valutazione dell'impatto ambientale di un microchip elettronico in silicio integrato in una centralina in Italia.
+
+Il componente viene spedito via aereo da Shenzhen a Milano per un totale di 9500 km. Peso minimo, stima tu.
+
+
+---------------------------------------------------------------------------------------------------------
+
+Valutazione dell'impatto ambientale di un microchip elettronico in silicio integrato in una centralina in Italia.
+
+Il componente viene spedito via aereo da Shenzhen a Milano per un totale di 9500 km. Peso minimo, stima tu.

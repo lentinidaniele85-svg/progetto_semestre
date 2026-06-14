@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import datetime
 import logging
+from html import escape
 
 logger = logging.getLogger(__name__)
 
 
 def generate_html_report(state: dict) -> str:
     """Return a self-contained HTML string from a completed AgentState dict."""
-    user_input = state.get("user_input") or "N/A"
+    user_input = escape(state.get("user_input") or "N/A")
     bom: list[dict] = state.get("bom") or []
     lca_results: list[dict] = state.get("lca_results") or []
     mcda_scores: list[dict] = state.get("mcda_scores") or []
@@ -18,7 +19,34 @@ def generate_html_report(state: dict) -> str:
     generated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     task_type = (state.get("constraints") or {}).get("task_type", "optimization")
-    
+
+    # ── Estrazione processName Ecoinvent per audit LCA ─────────────────────
+    # Il processName reale della colonna Excel viene propagato da nodes.py
+    # come 'ecoinvent_process_name' dentro ogni entry di lca_results.
+    # Per il baseline prendiamo il primo componente non-Transport con il campo.
+    # Per l'alternativa ottimizzata prendiamo il best_alternative del primo
+    # componente MCDA che ha un'alternativa vincitrice.
+    baseline_ecoinvent_activity = "N/A"
+    for r in lca_results:
+        if r.get("component_name", "") != "Transport" and r.get("ecoinvent_process_name"):
+            baseline_ecoinvent_activity = r["ecoinvent_process_name"]
+            break
+
+    optimized_ecoinvent_activity = "N/A"
+    for comp in mcda_scores:
+        best = comp.get("best_alternative")
+        if best and best.get("ecoinvent_process_name"):
+            optimized_ecoinvent_activity = best["ecoinvent_process_name"]
+            break
+    # Fallback: cerca dentro lca_results → alternatives
+    if optimized_ecoinvent_activity == "N/A":
+        for r in lca_results:
+            for alt in r.get("alternatives", []):
+                if alt.get("ecoinvent_process_name"):
+                    optimized_ecoinvent_activity = alt["ecoinvent_process_name"]
+                    break
+            if optimized_ecoinvent_activity != "N/A":
+                break
     if task_type == "modeling":
         t_report = "Report di Analisi Impatto LCA"
     else:
@@ -27,9 +55,12 @@ def generate_html_report(state: dict) -> str:
     t_generated = "Generato il"
     t_powered = "Powered by LangGraph & LCA data"
     t_bom = "Distinta Base Originale (BOM)"
-    t_comp = "Componente"
-    t_mat = "Materiale"
-    t_weight = "Quantità / Unità"
+    t_comp = "COMPONENT"
+    t_mat = "MATERIAL"
+    t_weight = "WEIGHT"
+    t_role = "FUNCTIONAL ROLE"
+    t_unit_imp = "IMPATTO UNITARIO"
+    t_tot_imp = "IMPATTO TOTALE"
     t_opt_sum = "Riepilogo Ottimizzazione"
     t_orig_mat = "Materiale Originale"
     t_rec_alt = "Alternativa Consigliata"
@@ -67,58 +98,139 @@ def generate_html_report(state: dict) -> str:
 
     def _bom_rows() -> str:
         display_bom = []
+        lca_map = {r.get("component_name", ""): r for r in lca_results}
+
         for item in bom:
-            display_bom.append({
-                "name": f"{item.get('name', '')} (Materiale)",
-                "material": item.get('material', ''),
-                "weight_kg": item.get('weight_kg', '')
-            })
+            comp_name = item.get("name", "")
+            weight = item.get("weight_kg", 1.0)
+            func_role = item.get("functional_role", "Material")
             
-            proc = item.get("manufacturing_process")
-            if proc:
-                if isinstance(proc, list):
-                    for p in proc:
+            if task_type == "modeling":
+                mat_key = f"{comp_name} (Material)"
+                proc_key = f"{comp_name} (Manufacturing)"
+                
+                mat_lca = lca_map.get(mat_key, {})
+                proc_lca = lca_map.get(proc_key, {})
+                
+                mat_scores = mat_lca.get("original_scores", {})
+                proc_scores = proc_lca.get("original_scores", {})
+                
+                display_bom.append({
+                    "component": comp_name,
+                    "material": mat_lca.get("original_material", item.get("material", "")),
+                    "weight": weight,
+                    "role": func_role,
+                    "unit_impact": mat_scores.get("unit_material_impact", 0.0),
+                    "total_impact": mat_scores.get("environmental_impact", 0.0)
+                })
+                
+                proc_name = item.get("manufacturing_process")
+                if proc_name and str(proc_name).lower() != "none":
+                    if isinstance(proc_name, list):
+                        for p in proc_name:
+                            display_bom.append({
+                                "component": comp_name,
+                                "material": p,
+                                "weight": weight,
+                                "role": "Manufacturing",
+                                "unit_impact": proc_scores.get("unit_material_impact", 0.0),
+                                "total_impact": proc_scores.get("environmental_impact", 0.0)
+                            })
+                    else:
                         display_bom.append({
-                            "name": f"{item.get('name', '')} (Processo)",
-                            "material": p,
-                            "weight_kg": item.get('weight_kg', '')
+                            "component": comp_name,
+                            "material": proc_name,
+                            "weight": weight,
+                            "role": "Manufacturing",
+                            "unit_impact": proc_scores.get("unit_material_impact", 0.0),
+                            "total_impact": proc_scores.get("environmental_impact", 0.0)
                         })
-                else:
-                    display_bom.append({
-                        "name": f"{item.get('name', '')} (Processo)",
-                        "material": proc,
-                        "weight_kg": item.get('weight_kg', '')
-                    })
-        
-        # Aggiunta Trasporto alla BOM
-        transport_comp = next((c for c in lca_results if c.get("component_name") == "Transport"), None)
+            else:
+                comp_lca = lca_map.get(comp_name, {})
+                scores = comp_lca.get("original_scores", {})
+                
+                # Material row
+                mat_total = scores.get("environmental_impact", 0.0) - scores.get("process_total_impact", 0.0) if "process_total_impact" in scores else scores.get("environmental_impact", 0.0)
+                display_bom.append({
+                    "component": comp_name,
+                    "material": comp_lca.get("original_material", item.get("material", "")),
+                    "weight": weight,
+                    "role": func_role,
+                    "unit_impact": scores.get("unit_material_impact", 0.0),
+                    "total_impact": mat_total
+                })
+                
+                # Process row
+                proc_name = item.get("manufacturing_process")
+                if proc_name and str(proc_name).lower() != "none":
+                    proc_unit = scores.get("process_unit_impact", 0.0)
+                    proc_total = scores.get("process_total_impact", 0.0)
+                    if isinstance(proc_name, list):
+                        for p in proc_name:
+                            display_bom.append({
+                                "component": comp_name,
+                                "material": p,
+                                "weight": weight,
+                                "role": "Manufacturing",
+                                "unit_impact": proc_unit,
+                                "total_impact": proc_total
+                            })
+                    else:
+                        display_bom.append({
+                            "component": comp_name,
+                            "material": proc_name,
+                            "weight": weight,
+                            "role": "Manufacturing",
+                            "unit_impact": proc_unit,
+                            "total_impact": proc_total
+                        })
+
+        # Trasporto
+        transport_comp = lca_map.get("Transport")
         if transport_comp:
             t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
             mat_name = transport_comp.get("original_material", f"Trasporto {t_mode}")
-            amount = transport_comp.get("original_scores", {}).get("amount", "-")
-            if amount != "-":
-                mat_name += f" (Quantità: {amount:.1f} tkm)"
+            scores = transport_comp.get("original_scores", {})
+            amount = scores.get("amount", "-")
+            total_imp = scores.get("environmental_impact", 0.0)
+            
+            unit_imp = 0.0
+            if amount != "-" and float(amount) > 0:
+                unit_imp = total_imp / float(amount)
+                
             display_bom.append({
-                "name": "Trasporto",
+                "component": "Trasporto",
                 "material": mat_name,
-                "weight_kg": "-"
+                "weight": amount,
+                "role": "Logistics",
+                "unit_impact": unit_imp,
+                "total_impact": total_imp
             })
         else:
             dist = state.get("logistics_data", {}).get("distance_km", 0.0)
             if dist:
                 t_mode = state.get("logistics_data", {}).get("transport_mode", "lorry")
                 display_bom.append({
-                    "name": "Trasporto",
-                    "material": f"Trasporto {t_mode} ({dist} km)",
-                    "weight_kg": "-"
+                    "component": "Trasporto",
+                    "material": f"Trasporto {t_mode}",
+                    "weight": "-",
+                    "role": f"Logistics ({dist} km)",
+                    "unit_impact": 0.0,
+                    "total_impact": 0.0
                 })
 
         rows = ""
         for row in display_bom:
+            w = f"{row['weight']:.3f}" if isinstance(row['weight'], (int, float)) else row['weight']
+            ui = f"{row['unit_impact']:.3f}" if isinstance(row['unit_impact'], (int, float)) else row['unit_impact']
+            ti = f"{row['total_impact']:.3f}" if isinstance(row['total_impact'], (int, float)) else row['total_impact']
             rows += (
-                f"<tr><td>{row['name']}</td>"
+                f"<tr><td>{row['component']}</td>"
                 f"<td>{row['material']}</td>"
-                f"<td>{row['weight_kg']}</td></tr>"
+                f"<td>{w}</td>"
+                f"<td>{row['role']}</td>"
+                f"<td>{ui}</td>"
+                f"<td>{ti}</td></tr>"
             )
         return rows
 
@@ -186,13 +298,55 @@ def generate_html_report(state: dict) -> str:
                 rows += f"<tr><td>{i}</td><td colspan='2'>{step}</td></tr>"
         return rows
 
+    def _matched_processes_section() -> str:
+        """Build an HTML table of all ecoinvent process names matched during LCA."""
+        rows = ""
+        for r in lca_results:
+            comp = r.get("component_name", "—")
+            proc = r.get("ecoinvent_process_name", "")
+            if not proc:
+                continue
+            orig_mat = r.get("original_material", "—")
+            rows += (
+                f"<tr><td>{comp}</td>"
+                f"<td>{orig_mat}</td>"
+                f"<td style='font-family:monospace; font-size:0.85em;'>{proc}</td></tr>"
+            )
+            # Also list alternatives if present
+            for alt in r.get("alternatives", []):
+                alt_proc = alt.get("ecoinvent_process_name", "")
+                if alt_proc:
+                    alt_name = alt.get("name", "—")
+                    rows += (
+                        f"<tr style='background:#f0fff4;'>"
+                        f"<td>{comp} <em>(alt.)</em></td>"
+                        f"<td>{alt_name}</td>"
+                        f"<td style='font-family:monospace; font-size:0.85em;'>{alt_proc}</td></tr>"
+                    )
+        if not rows:
+            return ""
+        return (
+            "<h2>&#128279; Processi Ecoinvent Matchati</h2>"
+            "<p style='font-size:0.88em; color:#555; margin-bottom:12px;'>"
+            "Nomi completi dei processi del database Ecoinvent utilizzati nel calcolo LCA."
+            "</p>"
+            "<table>"
+            "<thead><tr>"
+            "<th>Componente</th>"
+            "<th>Materiale / Processo</th>"
+            "<th>Nome Ecoinvent Completo</th>"
+            "</tr></thead>"
+            f"<tbody>{rows}</tbody>"
+            "</table>"
+        )
+
     def _assumptions_list() -> str:
         constraints = state.get("constraints", {})
         html = ""
         if constraints:
             html += "<strong>Vincoli Estratti (Constraints):</strong><ul>"
             for k, v in constraints.items():
-                html += f"<li><strong>{k}</strong>: {v}</li>"
+                html += f"<li><strong>{escape(str(k))}</strong>: {escape(str(v))}</li>"
             html += "</ul><hr style='border:none; border-top:1px solid #ddd; margin:12px 0;'/>"
 
         unique_assumptions = list(dict.fromkeys(assumptions_list))
@@ -202,12 +356,38 @@ def generate_html_report(state: dict) -> str:
         ]
         if not filtered_assumptions:
             html += "<p>Nessun dato esterno o assunzione aggiuntiva trovata.</p>"
-            return html
-            
-        html += "<strong>Assunzioni del Modello:</strong><ul>"
-        for a in filtered_assumptions:
-            html += f"<li>{a}</li>"
-        html += "</ul>"
+        else:
+            html += "<strong>Assunzioni del Modello:</strong><ul>"
+            for a in filtered_assumptions:
+                html += f"<li>{escape(str(a))}</li>"
+            html += "</ul>"
+
+        # ── Blocco Audit Ecoinvent ad Alta Visibilità ────────────────────────
+        # Mostra le attività Ecoinvent esatte usate nel calcolo LCA:
+        # tracciabilità completa per baseline e alternativa ottimizzata.
+        html += (
+            "<hr style='border:none; border-top:2px solid #0f3460; margin:18px 0;'/>"
+            "<strong style='color:#0f3460; font-size:1.05em;'>&#128270; Attività Ecoinvent — Riferimenti per Audit LCA</strong>"
+            "<div style='margin-top:10px; padding:14px 18px; background:#f0f4ff; "
+            "border-left:4px solid #0f3460; border-radius:0 6px 6px 0; font-size:0.92em;'>"
+        )
+        html += (
+            f"<p style='margin:6px 0;'>"
+            f"<span style='display:inline-block; min-width:240px; font-weight:600; color:#555;'>"
+            f"&#9654; Attivit&agrave; Ecoinvent Baseline:</span> "
+            f"<code style='background:#e8eaf6; padding:2px 8px; border-radius:4px; color:#1a237e;'>"
+            f"{baseline_ecoinvent_activity}</code></p>"
+        )
+        if task_type == "optimization":
+            html += (
+                f"<p style='margin:6px 0;'>"
+                f"<span style='display:inline-block; min-width:240px; font-weight:600; color:#555;'>"
+                f"&#9654; Attivit&agrave; Ecoinvent Ottimizzata:</span> "
+                f"<code style='background:#e8f5e9; padding:2px 8px; border-radius:4px; color:#1b5e20;'>"
+                f"{optimized_ecoinvent_activity}</code></p>"
+            )
+        html += "</div>"
+
         return html
 
     if task_type == "modeling":
@@ -382,7 +562,7 @@ def generate_html_report(state: dict) -> str:
 
 <h2>&#128203; {t_bom}</h2>
 <table>
-  <thead><tr><th>{t_comp}</th><th>{t_mat}</th><th>{t_weight}</th></tr></thead>
+  <thead><tr><th>{t_comp}</th><th>{t_mat}</th><th>{t_weight}</th><th>{t_role}</th><th>{t_unit_imp}</th><th>{t_tot_imp}</th></tr></thead>
   <tbody>{_bom_rows()}</tbody>
 </table>
 
@@ -404,6 +584,8 @@ def generate_html_report(state: dict) -> str:
 <div class="meta" style="border-left-color: #f59e0b; background: #fffdf5;">
   {_assumptions_list()}
 </div>
+
+{_matched_processes_section()}
 
 <footer>
   Sustainable Product Optimization Agent &nbsp;&middot;&nbsp; LangGraph pipeline &nbsp;&middot;&nbsp; {generated_at}

@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import re
@@ -7,7 +8,6 @@ from langchain_core.messages import HumanMessage, SystemMessage  # pyrefly: igno
 from agents.schemas import ConstraintsExtract
 from agents.state import AgentState
 from core.config import (
-    CO2_FALLBACK_VALUE,
     PROCESS_IMPACTS,
     TRANSPORT_IMPACT_PER_TKM,
     SHIP_IMPACT_PER_TKM,
@@ -152,14 +152,49 @@ def constraint_extractor(state: AgentState) -> dict:
     }
 
 
-# PROCESS_IMPACTS, TRANSPORT_IMPACT_PER_TKM e CO2_FALLBACK_VALUE
-# sono ora definiti in core/config.py e importati a inizio file.
+# PROCESS_IMPACTS e TRANSPORT_IMPACT_PER_TKM sono ora definiti in
+# core/config.py e importati a inizio file.
 
 
 # ---------------------------------------------------------------------------
 # Nodo 4 — LCA Validator (calcolo deterministico)
-# Formula: (Impatto_Materiale + Impatto_Processo + Impatto_Trasporto) × Massa_kg
+# Formula: (Impatto_Materiale + Impatto_Processo + Impatto_Trasporto) × Fattore_di_Scala
+#          dove Fattore_di_Scala è coerente con la UOM del record matchato
+#          (kg → massa reale; altre unità → quantità di output attesa).
+#          Vedi _resolve_scale_factor.
 # ---------------------------------------------------------------------------
+
+# Alias riconosciuti come "unità di massa" nella colonna 'unitOfMeasure'
+# (ultima colonna di dataset_ecoinvent_perfetto.xlsx). Per questi l'impatto
+# è espresso "al kg" → si scala per il peso reale del componente (mass_kg):
+# è il comportamento storico, fisicamente corretto.
+_MASS_UOM_ALIASES = frozenset({"kg", "kilogram", "kilograms", "kilogrammo", "kilogrammi", ""})
+
+
+def _resolve_scale_factor(unit_of_measure, mass_kg: float, expected_output: float = 1.0):
+    """Determina il fattore di scala coerente con l'Unità di Misura (UOM) del record.
+
+    Il dataset esprime ogni fattore di impatto rispetto alla propria unità
+    funzionale (colonna 'unitOfMeasure': 'kg', 'unit', 'm2', 'm3', 'kWh', ...).
+    Moltiplicare ciecamente per il peso in kg del componente (mass_kg) un
+    impatto espresso "a unità" (es. un intero impianto/macchinario, migliaia
+    di kg CO2 per 'unit') produce un errore di magnitudo enorme
+    (kg_CO2/unità × kg ≠ kg_CO2).
+
+    Ritorna (scale_factor, uom_mismatch):
+      - UOM di massa (kg e alias) → scala per il peso reale del componente
+        (mass_kg): comportamento storico, fisicamente corretto.
+      - Qualunque altra UOM → scala per la quantità di output attesa
+        (default 1.0 = un singolo componente/funzione), evitando di
+        applicare un fattore di massa a un valore non riferito al kg.
+        Il chiamante è responsabile di registrare un'assunzione esplicita
+        quando uom_mismatch=True, per audit e trasparenza.
+    """
+    uom = (unit_of_measure or "kg").strip().lower()
+    if uom in _MASS_UOM_ALIASES:
+        return mass_kg, False
+    return expected_output, True
+
 
 async def lca_validator(state: AgentState) -> dict:
     ita = is_italian(state.get("user_input", ""))
@@ -185,10 +220,26 @@ async def lca_validator(state: AgentState) -> dict:
         if dist_km is None:
             dist_km = logistics.get("distance_km") or 0.0
         geography = constraints.get("geography") or logistics.get("geography", "GLO")
-        
-        has_market_material = False
 
-        for orig_comp in (state.get("bom") or []):
+        # ── GUARDIA task_type (1/3) — definita SUBITO, prima del loop ────
+        # Alcuni rami condizionali (es. is_material_only=True) saltano il
+        # blocco "ricerca dinamica processo" dove 'task_type' veniva
+        # storicamente assegnato per la prima volta: la successiva
+        # 'await provider.find_closest_match(..., task_type=task_type, ...)'
+        # sul materiale originale leggerebbe quindi una variabile mai
+        # vincolata in quel ramo → UnboundLocalError. Questa assegnazione
+        # iniziale chiude lo scope una volta per tutte; le altre due
+        # ri-assegnazioni più sotto (2/3 e 3/3) restano come ri-letture
+        # difensive ridondanti dello stesso valore — comportamento invariato.
+        task_type = constraints.get("task_type", "optimization")
+
+        # FIX BOM DEEP COPY: iteriamo su una copia profonda della BOM per evitare
+        # mutazioni in-place (es. orig_comp["is_market"] = ...) che inquinano il
+        # vettore originale di state["bom"] e causano il bug dello split 50/50 sui pesi.
+        # La BOM originale mantiene il 100% del peso sul materiale di partenza.
+        bom_snapshot = copy.deepcopy(state.get("bom") or [])
+
+        for orig_comp in bom_snapshot:
             component_name = orig_comp.get("name", "")
             
             # Find alternatives for this component, if any (empty in 'modeling' mode)
@@ -205,6 +256,18 @@ async def lca_validator(state: AgentState) -> dict:
             mfg_proc_field = orig_comp.get("manufacturing_process")
             geom_field = orig_comp.get("geometry")
 
+            # UOM di default per il contributo di processo: i valori hardcoded
+            # in PROCESS_IMPACTS — e l'impatto nullo del gate is_material_only —
+            # sono espressi "al kg di materiale lavorato", quindi la UOM di
+            # riferimento resta 'kg' (scala = mass_kg). Viene sovrascritta più
+            # sotto SOLO se troviamo un match dinamico nel DB con UOM diversa
+            # (vedi _resolve_scale_factor / colonna 'unitOfMeasure').
+            process_uom = "kg"
+
+            # Gate condizionale per i materiali sfusi (grezzi): se il
+            # componente è is_material_only=True (o manca processo/geometria),
+            # la manifattura viene saltata in modo pulito — process_impact=0.0,
+            # nessuna ricerca dinamica di processo, nessuna UOM da risolvere.
             if is_mat_only or mfg_proc_field is None or geom_field is None or mfg_proc_field.lower() == "none" or geom_field.lower() == "none":
                 process_impact = 0.0
                 process_name = "none"
@@ -218,8 +281,8 @@ async def lca_validator(state: AgentState) -> dict:
                 GEOMETRY_TO_PROCESS = {
                     "Corpi Cavi": "Blow moulding",
                     "Pezzi Pieni Complessi": "Injection moulding",
-                    "Film": "Film extrusion",
-                    "Profili/Tubi": "Tube extrusion"
+                    "Film": "Extrusion (film)",
+                    "Profili/Tubi": "Extrusion"
                 }
                 # process_name: label display (per thought log e fallback PROCESS_IMPACTS)
                 process_name = mfg_proc_field if mfg_proc_field else GEOMETRY_TO_PROCESS.get(orig_comp.get("geometry"), "Injection moulding").lower()
@@ -238,6 +301,7 @@ async def lca_validator(state: AgentState) -> dict:
                 )
                 if proc_match and proc_match.get("environmental_impact") is not None:
                     process_impact = proc_match["environmental_impact"]
+                    process_uom = proc_match.get("unit_of_measure", "kg")
                     thought_log.append(f"[LCA Validation] Processo '{proc_query}' associato al record: {proc_match.get('providerName', '?')}")
                 else:
                     _fallback_key = process_name.lower()
@@ -335,16 +399,48 @@ async def lca_validator(state: AgentState) -> dict:
                 thought_log.append(f"Riga Excel trovata: {idx} - {provider_name} - {loc_found} - {val_co2}")
 
                 mat_impact = orig_match["environmental_impact"]
+                # ── ESTRAZIONE processName BASELINE ─────────────────────────
+                # 'providerName' in _build_result corrisponde a row["processname"]
+                # (la colonna Excel). Lo salviamo per la tracciabilità nel report.
+                baseline_ecoinvent_process_name = orig_match.get("providerName", "N/A")
                 is_market = orig_match.get("is_market", False)  # T02: campo corretto
                 orig_comp["is_market"] = is_market
-                if is_market:
-                    has_market_material = True
                 mat_energy = orig_match.get("energy_mj") or orig_comp.get("estimated_energy_mj", 50.0)
                 mat_cost = orig_match.get("cost_per_kg") or orig_comp.get("estimated_cost_per_kg", 1.0)
+                mat_uom = orig_match.get("unit_of_measure", "kg")
+
+            # ── Coerenza Massa ↔ Unità di Misura (UOM) ───────────────────────
+            # Il fattore di impatto NON è sempre "al kg": il dataset riporta per
+            # ogni record la propria unità funzionale (ultima colonna del file,
+            # 'unitOfMeasure': kg, unit, m2, m3, kWh, ...). Scalare ciecamente
+            # per mass_kg un valore "a unità" (es. un intero impianto, migliaia
+            # di kg CO2 per 'unit') produrrebbe un errore di magnitudo enorme.
+            # _resolve_scale_factor garantisce coerenza: massa reale (mass_kg)
+            # per record "al kg" — il caso dominante (~14k record) — quantità
+            # di output attesa (default 1 componente) per qualunque altra UOM,
+            # con assunzione tracciata per audit/trasparenza.
+            mat_scale, mat_uom_mismatch = _resolve_scale_factor(mat_uom, mass_kg)
+            proc_scale, proc_uom_mismatch = _resolve_scale_factor(process_uom, mass_kg)
+            for _uom_label, _uom_value, _uom_mismatch, _uom_scale in (
+                (original_material, mat_uom, mat_uom_mismatch, mat_scale),
+                (f"{process_name} (processo)", process_uom, proc_uom_mismatch, proc_scale),
+            ):
+                if _uom_mismatch:
+                    _uom_note = (
+                        f"[UOM] '{_uom_label}': record ecoinvent espresso in '{_uom_value}' "
+                        f"(≠ 'kg'). Per evitare un errore di magnitudo (impatto-per-unità × "
+                        f"massa_kg) uso come fattore di scala la quantità di output attesa "
+                        f"({_uom_scale:g}) invece del peso del componente ({mass_kg:g} kg)."
+                    )
+                    assumptions.append(_uom_note)
+                    thought_log.append(f"⚖ {_uom_note}")
 
             # Separazione dei contributi: Materiale, Processo e poi Trasporto.
-            mat_total_impact = mat_impact * mass_kg
-            proc_total_impact = process_impact * mass_kg
+            # Il fattore di scala è coerente con la UOM del record: massa reale
+            # per i record "al kg" (caso dominante), quantità di output attesa
+            # per ogni altra unità (vedi blocco di coerenza UOM qui sopra).
+            mat_total_impact = mat_impact * mat_scale
+            proc_total_impact = process_impact * proc_scale
             
             orig_scores_mat = {
                 "environmental_impact": mat_total_impact,
@@ -415,13 +511,29 @@ async def lca_validator(state: AgentState) -> dict:
                     thought_log.append(f"Riga Excel trovata: {idx_alt} - {provider_name_alt} - {loc_found_alt} - {val_co2_alt}")
 
                     alt_mat_impact = alt_match["environmental_impact"]
-                    alt_is_market = alt_match.get("is_market", False)  # T02: campo corretto
+                    # ── ESTRAZIONE processName ALTERNATIVA ──────────────────
+                    alt_ecoinvent_process_name = alt_match.get("providerName", "N/A")
                     alt_energy = alt_match.get("energy_mj") or alt.get("estimated_energy_mj", 50.0)
                     alt_cost = alt_match.get("cost_per_kg") or alt.get("estimated_cost_per_kg", 1.0)
+                    alt_uom = alt_match.get("unit_of_measure", "kg")
 
                 # L'impatto del trasporto è gestito globalmente alla fine.
                 # Per ottimizzazione eseguiamo lo stesso identico calcolo LCA (Materiale + Processo)
-                alt_mat_total = alt_mat_impact * mass_kg
+                # Stesso principio di coerenza UOM↔massa applicato al materiale
+                # originale (vedi _resolve_scale_factor sopra): evita errori di
+                # magnitudo quando l'alternativa proviene da un record con UOM ≠ 'kg'.
+                alt_scale, alt_uom_mismatch = _resolve_scale_factor(alt_uom, mass_kg)
+                if alt_uom_mismatch:
+                    _alt_uom_note = (
+                        f"[UOM] alternativa '{alt_name}': record ecoinvent espresso in "
+                        f"'{alt_uom}' (≠ 'kg'). Uso come fattore di scala la quantità di "
+                        f"output attesa ({alt_scale:g}) invece del peso del componente "
+                        f"({mass_kg:g} kg) per evitare un errore di magnitudo."
+                    )
+                    assumptions.append(_alt_uom_note)
+                    thought_log.append(f"⚖ {_alt_uom_note}")
+
+                alt_mat_total = alt_mat_impact * alt_scale
                 alt_total_impact = alt_mat_total + proc_total_impact if task_type == "optimization" else alt_mat_total
 
                 scores = {
@@ -440,6 +552,8 @@ async def lca_validator(state: AgentState) -> dict:
                     "structural_match": alt["structural_match"],
                     "estimated_cost_change": alt.get("estimated_cost_change"),
                     "scores": scores,
+                    # processName ecoinvent dell'alternativa (per audit LCA)
+                    "ecoinvent_process_name": alt_ecoinvent_process_name,
                 })
 
             task_type = (state.get("constraints") or {}).get("task_type", "optimization")
@@ -449,6 +563,8 @@ async def lca_validator(state: AgentState) -> dict:
                     "original_material": original_material,
                     "original_scores": orig_scores_mat,
                     "alternatives": alt_results,
+                    # processName ecoinvent del materiale baseline (per audit LCA)
+                    "ecoinvent_process_name": baseline_ecoinvent_process_name,
                 })
                 lca_results.append({
                     "component_name": f"{component_name} (Manufacturing)",
@@ -472,6 +588,8 @@ async def lca_validator(state: AgentState) -> dict:
                     "original_material": original_material,
                     "original_scores": orig_scores_mat,
                     "alternatives": alt_results,
+                    # processName ecoinvent del materiale baseline (per audit LCA)
+                    "ecoinvent_process_name": baseline_ecoinvent_process_name,
                 })
 
         # ── PATCH MIXED LOGISTICS ──
@@ -485,7 +603,8 @@ async def lca_validator(state: AgentState) -> dict:
         # Il text-scan su user_input è rimosso: la fonte di verità è il campo constraints strutturato.
         global_mode = (global_mode or "").lower() or None
 
-        for orig_comp in (state.get("bom") or []):
+        # Usa la stessa snapshot già copiata (non ri-legge state["bom"] grezzo)
+        for orig_comp in bom_snapshot:
             mass_kg = orig_comp.get("weight_kg", 1.0)
             comp_mode = (orig_comp.get("transport_mode") or global_mode)
             if comp_mode:
@@ -643,6 +762,8 @@ def mcda_scorer(state: AgentState) -> dict:
                 "aesthetic_match": alt["aesthetic_match"],
                 "structural_match": alt["structural_match"],
                 "estimated_cost_change": alt.get("estimated_cost_change"),
+                # processName ecoinvent dell'alternativa (propagato da lca_validator)
+                "ecoinvent_process_name": alt.get("ecoinvent_process_name", "N/A"),
             })
 
         scored.sort(key=lambda x: x["mcda_score"], reverse=True)
@@ -705,7 +826,7 @@ async def human_feedback_processor(state: AgentState) -> dict:
         # Fase di intervista: qualsiasi risposta è una risposta alle domande mancanti
         if current_phase == "interview":
             new_user_input = state.get("user_input", "") + f"\n\n[User Interview Response]: {feedback}"
-            thought_log.append(f"Interview response received. Extracting missing constraints...")
+            thought_log.append("Interview response received. Extracting missing constraints...")
             
             # --- INGESTIONE ATTIVA DEI CONSTRAINTS ---
             llm = ModelFactory.get_model(max_tokens=500)
@@ -839,8 +960,8 @@ async def human_feedback_processor(state: AgentState) -> dict:
                 "interview_attempt_count": state.get("interview_attempt_count", 0)
             }
 
-        except Exception as exc:
-            thought_log.append(f"Errore di formattazione interno. Ripristino del checkpoint.")
+        except Exception:
+            thought_log.append("Errore di formattazione interno. Ripristino del checkpoint.")
             return {
                 "pending_feedback": "Ho avuto difficoltà a comprendere la correzione tecnica. Puoi riformulare cosa devo modificare?",
                 "current_phase": "interview", # ← Riapre il loop senza far avanzare il grafo

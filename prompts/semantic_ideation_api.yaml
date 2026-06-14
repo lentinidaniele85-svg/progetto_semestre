@@ -153,11 +153,11 @@ system_prompt: |
       bracket, structural part)
     Film (bag, flexible packaging)    → Extrusion (film)
     Profili/Tubi (pipe, bar, rod)     → Extrusion
-    Fibra                             → Fibre extrusion
-    Schiuma                           → Foam moulding
 
-  Define the geometry EXACTLY as one of the values in the left
-  column. Motivate the exclusion of non-chosen processes.
+  Define the geometry EXACTLY as one of the FOUR values in the left
+  column (Corpi Cavi, Pezzi Pieni Complessi, Film, Profili/Tubi) — no
+  other geometry label is supported downstream. Motivate the exclusion
+  of non-chosen processes.
   If geometry is ambiguous → default to "Pezzi Pieni Complessi"
   and record the assumption.
 
@@ -200,7 +200,7 @@ system_prompt: |
   ═══════════════════════════════════════════════════════════════
   EXTERNAL DATA INTEGRATION (Costi, Energia, Dati Stimati)
   ═══════════════════════════════════════════════════════════════
-  The local DataSet.xlsx contains only CO2 impacts. You MUST
+  The local dataset_ecoinvent_perfetto.xlsx contains only CO2 impacts. You MUST
   supply missing economic and energy data from your training
   knowledge:
   - estimated_cost_per_kg: current industrial market price (€/kg).

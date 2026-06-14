@@ -77,6 +77,3 @@ PROCESS_IMPACTS: dict[str, float] = {
 TRANSPORT_IMPACT_PER_TKM: float = 0.05
 SHIP_IMPACT_PER_TKM: float = 0.012
 AIRCRAFT_IMPACT_PER_TKM: float = 0.800
-
-# Valore di fallback cautelativo per materiali non trovati nel database [kg CO₂ eq / kg]
-CO2_FALLBACK_VALUE: float = 3.5

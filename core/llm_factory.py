@@ -20,14 +20,32 @@ class ModelFactory:
     def get_model(max_tokens: int | None = None) -> BaseChatModel:
         cache_key = f"{settings.llm_provider}:{settings.openrouter_model}:{max_tokens}"
         if cache_key not in _model_cache:
-            kwargs = {
-                "model": settings.openrouter_model,
-                "openai_api_key": settings.openrouter_api_key,
-                "base_url": OPENROUTER_BASE_URL,
-            }
-            if max_tokens is not None:
-                kwargs["max_tokens"] = max_tokens
-            _model_cache[cache_key] = ChatOpenAI(**kwargs)
+            _model_cache[cache_key] = ChatOpenAI(
+                model=settings.openrouter_model,
+                openai_api_key=settings.openrouter_api_key,
+                base_url=OPENROUTER_BASE_URL,
+                # ── Cap esplicito sui token di output (fix errore 402 OpenRouter) ──
+                # PROBLEMA: langchain-openai >= 0.2 rinomina SEMPRE il parametro
+                # costruttore 'max_tokens' in 'max_completion_tokens' (terminologia
+                # OpenAI post-set/2024) prima di inviarlo. Il gateway di OpenRouter,
+                # che instrada verso decine di provider eterogenei, riconosce per il
+                # proprio pre-flight credit-check SOLO il parametro standard
+                # 'max_tokens' — ignora 'max_completion_tokens'. Risultato: nessun
+                # cap arriva a OpenRouter, che stima il costo sul MASSIMO output del
+                # modello (16384 token per gpt-4o-mini — esattamente il valore
+                # riportato nell'errore "You requested up to 16384 tokens, but can
+                # only afford 16078"), facendo fallire la richiesta con HTTP 402
+                # ancora prima che il modello generi una sola risposta.
+                # SOLUZIONE: 'extra_body' inietta i campi indicati direttamente nel
+                # JSON della richiesta HTTP (bypassando la rinomina di langchain —
+                # è il meccanismo raccomandato dalla stessa documentazione
+                # langchain-openai per i parametri specifici di provider compatibili
+                # come OpenRouter/vLLM/LM Studio). In questo modo OpenRouter riceve
+                # un 'max_tokens' esplicito e contenuto, il pre-flight credit-check
+                # passa, e l'output resta comunque ampiamente sufficiente per gli
+                # schemi Pydantic strutturati (ConstraintsExtract, BOM, ecc.).
+                extra_body={"max_tokens": 4096},
+            )
         return _model_cache[cache_key]
 
     @staticmethod

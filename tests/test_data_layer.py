@@ -1,5 +1,4 @@
 import asyncio
-from pathlib import Path
 from unittest.mock import patch, AsyncMock
 
 import pytest
@@ -48,7 +47,7 @@ def test_search_materials_case_insensitive(client: CSVLcaClient) -> None:
 # get_impact_scores tests
 # ---------------------------------------------------------------------------
 
-# IDs reali verificati nel DataSet.xlsx (climateChangeImpact > 0)
+# IDs reali verificati nel dataset_ecoinvent_perfetto.xlsx (climateChangeImpact > 0)
 _REAL_ID_A = "97c91c0b-ebe6-53b3-82b0-b3a3c1823439_85f25c36-edd2-4383-9fbc-4577e0726e00"  # battery NiMH, ~28.76
 _REAL_ID_B = "a893d1ad-2d28-5dbd-b3fd-f926b2997eb7_d51e5a32-c20a-4da6-8d58-31f344b50c00"  # market waste graphical paper, ~1.02
 
@@ -60,7 +59,7 @@ def test_get_impact_scores_known_id(client: CSVLcaClient) -> None:
 
 def test_get_impact_scores_unknown_id_returns_none(client: CSVLcaClient) -> None:
     scores = asyncio.run(client.get_impact_scores("unknown-id-999"))
-    assert scores is None, "Expected None for an id not present in DataSet.xlsx"
+    assert scores is None, "Expected None for an id not present in dataset_ecoinvent_perfetto.xlsx"
 
 
 def test_get_impact_scores_deterministic(client: CSVLcaClient) -> None:
@@ -74,7 +73,6 @@ def test_get_impact_scores_deterministic(client: CSVLcaClient) -> None:
 # ---------------------------------------------------------------------------
 
 import pandas as pd
-from unittest.mock import patch
 
 
 @pytest.fixture
@@ -85,7 +83,7 @@ def mock_client() -> CSVLcaClient:
       - "polypropylene production"  → is_market deve essere False
     Bypassa la lettura del file Excel reale.
     """
-    client = CSVLcaClient()           # usa il DataSet.xlsx reale per l'init
+    client = CSVLcaClient()           # usa il dataset_ecoinvent_perfetto.xlsx reale per l'init
     # Sostituiamo _df con uno sintetico e ricostruiamo le colonne di supporto.
     # NOTA: le location usano i valori canonici del sistema (non i codici ecoinvent GLO/RER)
     # perché _get_location_subset confronta con case-insensitive ma la catena di fallback

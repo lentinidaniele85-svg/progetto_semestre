@@ -15,6 +15,17 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# ── Fix encoding Windows: forza stdout/stderr in UTF-8 ───────────────────────
+# Su Windows la console usa il codepage cp1252 di default. I log di debug
+# (es. "[NORMALIZER] ... → base_material=...") contengono caratteri non-ASCII
+# (U+2192 →) che causano UnicodeEncodeError a runtime. Il reconfigure() imposta
+# UTF-8 sull'intera sessione Streamlit senza toccare le variabili d'ambiente.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
 import uuid
 
 import pandas as pd
@@ -323,72 +334,233 @@ def _confirm_restart():
 
 
 # ---------------------------------------------------------------------------
-# Layout
+# Layout — Split-Screen with Independent Overflow (Claude Artifacts style)
 # ---------------------------------------------------------------------------
 
-left_col, right_col = st.columns([1, 2])
+st.markdown("""
+    <style>
+    /* Import premium font */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+
+    /* Glassmorphism for expanders and dataframes */
+    .streamlit-expanderHeader {
+        background-color: rgba(255,255,255,0.05);
+        border-radius: 8px;
+    }
+
+    /* Modern gradients for primary buttons */
+    div.stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        color: white;
+        border: none;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+    }
+    div.stButton > button[kind="primary"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    /* Destructive styling for secondary buttons */
+    div.stButton > button[kind="secondary"] {
+        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        color: white;
+        border: none;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+    }
+    div.stButton > button[kind="secondary"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    /* Chat bubbles */
+    .stChatMessage {
+        background-color: rgba(0,0,0,0.03);
+        border-radius: 12px;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+
+    /* Dashboard styling */
+    h3 {
+        color: #059669;
+        font-weight: 600;
+    }
+
+    /* =====================================================================
+       SPLIT-SCREEN LAYOUT — two fixed-height columns, each with its own
+       independent scrollbar, and a chat input pinned to the bottom of the
+       left column. Targets Streamlit 1.58's internal DOM structure:
+
+         [data-testid="stMain"]  (flex column, 100dvh) — direct children:
+           1. [data-testid="stMainBlockContainer"]  (the page content)
+           2. <div> anonymous flex-spacer (no data-testid)
+
+       Note: st.chat_input() called inside a column does NOT get promoted
+       to a top-level [data-testid="stBottom"] bar — it renders inline as
+       the last element of that column, which is why it's pinned via
+       position:sticky further below instead. */
+
+    html, body {
+        overflow: hidden !important;
+    }
+    [data-testid="stAppViewContainer"] {
+        overflow: hidden !important;
+    }
+
+    /* The whole app becomes a non-scrolling 100dvh flex column */
+    [data-testid="stMain"] {
+        height: 100dvh !important;
+        overflow: hidden !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+    }
+
+    /* Collapse the anonymous spacer div so the block-container grows instead */
+    [data-testid="stMain"] > div:not([data-testid]) {
+        flex: 0 0 0 !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        overflow: hidden !important;
+    }
+
+    [data-testid="stMainBlockContainer"] {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        overflow: hidden !important;
+        display: flex !important;
+        flex-direction: column !important;
+        box-sizing: border-box !important;
+        padding-bottom: 0.5rem !important;
+    }
+
+    /* Title/caption keep their natural height; only the split container grows */
+    [data-testid="stMainBlockContainer"] > div {
+        flex: 0 0 auto;
+    }
+    [data-testid="stMainBlockContainer"] > div:has(.st-key-split_layout) {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+    }
+
+    /* Streamlit wraps st.container(key=...) in an extra, class-less
+       "stLayoutWrapper" div that doesn't grow by default (flex: 0 0 auto;
+       height: auto). Use :has() to reach that wrapper from our keyed child
+       and force IT to grow first, so percentage heights below can resolve. */
+    [data-testid="stLayoutWrapper"]:has(> .st-key-split_layout) {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        overflow: hidden !important;
+        display: flex !important;
+        flex-direction: column !important;
+    }
+
+    /* Our split container fills the remaining height after title/caption */
+    .st-key-split_layout {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        overflow: hidden !important;
+        display: flex !important;
+        flex-direction: column !important;
+    }
+
+    /* ...and another stLayoutWrapper sits between our container and the
+       actual columns row — same fix applies. */
+    .st-key-split_layout > div[data-testid="stLayoutWrapper"] {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        overflow: hidden !important;
+        display: flex !important;
+        flex-direction: column !important;
+    }
+    .st-key-split_layout div[data-testid="stHorizontalBlock"] {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        height: 100% !important;
+        align-items: stretch !important;
+    }
+
+    /* Each column scrolls independently of the other */
+    .st-key-split_layout div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+        height: 100% !important;
+        min-height: 0 !important;
+        overflow-y: auto !important;
+        overscroll-behavior: contain;
+        box-sizing: border-box;
+        scrollbar-gutter: stable;
+    }
+    .st-key-split_layout div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-of-type {
+        padding-right: 1rem;
+    }
+    .st-key-split_layout div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:last-of-type {
+        padding-left: 1rem;
+        border-left: 1px solid rgba(128, 128, 128, 0.15);
+    }
+
+    /* st.chat_input() called inside a column renders inline as the last
+       stElementContainer of that column's vertical block (Streamlit only
+       promotes it to the floating stBottom bar when called at the top
+       level). Turn the column's content into a flex column so this last
+       element is pushed to the bottom when there's spare room, and pin it
+       there with position:sticky once messages overflow and the column
+       scrolls. */
+    .st-key-split_layout div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-of-type > div[data-testid="stVerticalBlock"] {
+        display: flex !important;
+        flex-direction: column !important;
+        min-height: 100% !important;
+    }
+    .st-key-split_layout div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-of-type > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"] {
+        flex: 0 0 auto !important;
+        width: 100% !important;
+    }
+    .st-key-split_layout div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:first-of-type > div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:last-child {
+        margin-top: auto !important;
+        position: sticky !important;
+        bottom: 0 !important;
+        padding-top: 0.75rem !important;
+        padding-bottom: 0.25rem !important;
+        background-color: var(--app-bg-color, #0e1117) !important;
+        z-index: 10 !important;
+        border-top: 1px solid rgba(128, 128, 128, 0.15);
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Mirror the app's actual background colour onto a CSS variable so the
+# sticky chat-input bar (above) doesn't show a mismatched colour swatch
+# when messages scroll underneath it, regardless of light/dark theme.
+st.components.v1.html(
+    """
+    <script>
+    const appEl = window.parent.document.querySelector('.stApp');
+    if (appEl) {
+        const bg = getComputedStyle(appEl).backgroundColor;
+        window.parent.document.documentElement.style.setProperty('--app-bg-color', bg);
+    }
+    </script>
+    """,
+    height=0,
+)
+
+split_layout = st.container(key="split_layout")
+with split_layout:
+    left_col, right_col = st.columns([35, 65])
 
 # ── Left Column ─────────────────────────────────────────────────────────────
 with left_col:
-    # Inject Premium CSS
-    st.html("""
-        <style>
-        /* Import premium font */
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        
-        html, body, [class*="css"] {
-            font-family: 'Inter', sans-serif;
-        }
-        
-        /* Glassmorphism for expanders and dataframes */
-        .streamlit-expanderHeader {
-            background-color: rgba(255,255,255,0.05);
-            border-radius: 8px;
-        }
-        
-        /* Modern gradients for primary buttons */
-        div.stButton > button[kind="primary"] {
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-            color: white;
-            border: none;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            transition: all 0.3s ease;
-        }
-        div.stButton > button[kind="primary"]:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
-        }
-
-        /* Destructive styling for secondary buttons */
-        div.stButton > button[kind="secondary"] {
-            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-            color: white;
-            border: none;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            transition: all 0.3s ease;
-        }
-        div.stButton > button[kind="secondary"]:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
-        }
-        
-        /* Chat bubbles */
-        .stChatMessage {
-            background-color: rgba(0,0,0,0.03);
-            border-radius: 12px;
-            padding: 10px;
-            margin-bottom: 10px;
-        }
-        
-        /* Dashboard styling */
-        h3 {
-            color: #059669;
-            font-weight: 600;
-        }
-        </style>
-    """)
-
-
     # Chat history
     for msg in st.session_state.chat_history:
         if msg["role"] == "thought":
@@ -469,6 +641,32 @@ with right_col:
     # Se c'è un errore nello stato, forziamo la fase a 'error' per fermare il rendering
     if state.get("error") or state.get("error_message"):
         phase = "error"
+
+    # ── Report canvas refresh — scroll right column to top on new content ───
+    # Whenever the SOP phase advances (i.e. a new report section is generated),
+    # reset the right column's scroll position so the new output is visible
+    # from the start, instead of leaving the user scrolled into stale content.
+    # Placed here (as the first element inside right_col) so its component
+    # iframe is a normal scrollable-column child rather than a top-level
+    # sibling of split_layout, which our layout CSS squeezes to zero height.
+    if st.session_state.get("_scrolled_phase") != phase:
+        st.session_state["_scrolled_phase"] = phase
+        st.components.v1.html(
+            """
+            <script>
+            function run() {
+                const cols = window.parent.document.querySelectorAll(
+                    '.st-key-split_layout div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]'
+                );
+                if (cols.length > 1) {
+                    cols[cols.length - 1].scrollTo({top: 0, behavior: 'smooth'});
+                }
+            }
+            setTimeout(run, 200);
+            </script>
+            """,
+            height=0,
+        )
 
     # ── Phase ordering helper ────────────────────────────────────────────────
     _PHASE_ORDER = ["init", "constraints", "interview", "workflow", "material", "lca", "mcda", "complete"]
@@ -672,11 +870,12 @@ with right_col:
                             else:
                                 opt_data = lca_lookup.get(comp_name, {})
                                 from core.config import PROCESS_IMPACTS
-                                proc_unit = opt_data.get("process_unit_impact", PROCESS_IMPACTS.get(proc, 1.0))
+                                proc_default = PROCESS_IMPACTS.get(proc, PROCESS_IMPACTS.get(proc.capitalize(), 1.0))
+                                proc_unit = opt_data.get("process_unit_impact", proc_default)
                                 proc_total = opt_data.get("process_total_impact", proc_unit * weight)
                         else:
                             from core.config import PROCESS_IMPACTS
-                            proc_unit = PROCESS_IMPACTS.get(proc, 1.0)
+                            proc_unit = PROCESS_IMPACTS.get(proc, PROCESS_IMPACTS.get(proc.capitalize(), 1.0))
                             proc_total = proc_unit * weight
                             
                         proc_row["unit_impact"] = proc_unit
@@ -876,4 +1075,5 @@ with right_col:
                     mime="text/html",
                     width="stretch",
                 )
+
 
